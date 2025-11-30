@@ -34,6 +34,7 @@ async def universal_budget_handler(callback: CallbackQuery, state: FSMContext):
     
     # В зависимости от сегмента переходим к следующему шагу
     if segment == "investment":
+        # === edit_text (заменяем предыдущее сообщение) ===
         await callback.message.edit_text(
             "Когда планируете инвестировать?",
             reply_markup=get_timeline_keyboard("investment")
@@ -41,6 +42,7 @@ async def universal_budget_handler(callback: CallbackQuery, state: FSMContext):
         await state.set_state("investment:waiting_for_timeline")
         
     elif segment == "living":
+        # === edit_text (заменяем предыдущее сообщение) ===
         await callback.message.edit_text(
             "Когда планируете приобретать?",
             reply_markup=get_timeline_keyboard("living")

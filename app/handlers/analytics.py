@@ -3,7 +3,8 @@ from aiogram.types import CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
 
 from app.core.config import config
-from app.keyboards.contact import get_contact_keyboard, get_policy_keyboard, get_subscribe_keyboard
+from app.keyboards.contact import get_policy_keyboard
+from app.handlers.contact import share_contact
 
 analytics_router = Router()
 
@@ -20,16 +21,12 @@ async def analytics_start(callback: CallbackQuery, state: FSMContext):
     await state.update_data(segment="analytics")
     await add_step_to_path(state, "Аналитика доходности локаций")
     
-    # Поток как в ТЗ - отправляем новые сообщения вместо редактирования
-    # === ИЗМЕНЕНИЕ: Убрали edit_text, оставили только answer ===
-    await callback.message.answer(
+    # === СООБЩЕНИЕ С ПОЛИТИКОЙ: edit_text (заменяем предыдущее сообщение) ===
+    await callback.message.edit_text(
         "Продолжая диалог, Вы соглашаетесь с Политикой по обработке персональных данных",
         reply_markup=get_policy_keyboard()
     )
-    await callback.message.answer(
-        "Пожалуйста, авторизуйтесь, нажав кнопку внизу экрана.\n"
-        "Ваши данные полностью защищены — обещаем, никаких навязчивых звонков",
-        reply_markup=get_contact_keyboard("analytics")
-    )
-    await state.set_state("analytics:waiting_for_contact")
+    
+    # Сразу переходим к запросу контакта с Reply-клавиатурой
+    await share_contact(callback, state)
     await callback.answer()

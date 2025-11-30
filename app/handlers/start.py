@@ -1,5 +1,5 @@
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, FSInputFile
+from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 
@@ -50,37 +50,8 @@ async def start_handler(message: Message, state: FSMContext):
     # Безопасное логирование - только ID и UTM
     logger.info(f"🚀 Новый пользователь: ID={message.from_user.id}, UTM={utm_source}")
     
-    # Отправляем приветственное сообщение с картинкой подписки
-    try:
-        subscribe_img = FSInputFile(config.subscribe_image_path)
-        await message.answer_photo(
-            photo=subscribe_img,
-            caption="Добро пожаловать в ГК МЕТРЫ!\n\nВыберите Ваш запрос:",
-            reply_markup=get_main_menu()
-        )
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки стартовой картинки: {e}")
-        await message.answer(
-            "Добро пожаловать в ГК МЕТРЫ!\n\nВыберите Ваш запрос:",
-            reply_markup=get_main_menu()
-        )
-
-@start_router.callback_query(F.data == "back_to_main")
-async def back_to_main(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    
-    # При возврате в главное меню тоже отправляем картинку подписки
-    try:
-        subscribe_img = FSInputFile(config.subscribe_image_path)
-        await callback.message.answer_photo(
-            photo=subscribe_img,
-            caption="Выберите Ваш запрос:",
-            reply_markup=get_main_menu()
-        )
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки картинки подписки: {e}")
-        await callback.message.edit_text(
-            "Выберите Ваш запрос:",
-            reply_markup=get_main_menu()
-        )
-    await callback.answer()
+    # === СТАРТОВОЕ СООБЩЕНИЕ БЕЗ КАРТИНКИ ===
+    await message.answer(
+        "Выберите Ваш запрос:",
+        reply_markup=get_main_menu()
+    )

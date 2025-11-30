@@ -1,13 +1,12 @@
 from aiogram import Router, F
 from aiogram.types import CallbackQuery
 from aiogram.fsm.context import FSMContext
-from aiogram.types import FSInputFile
 
-from app.core.config import config
 from app.keyboards.budget import get_budget_keyboard
 from app.keyboards.timeline import get_timeline_keyboard
 from app.keyboards.management import get_management_keyboard
-from app.keyboards.contact import get_contact_keyboard, get_policy_keyboard
+from app.keyboards.contact import get_policy_keyboard
+from app.handlers.contact import share_contact
 import logging
 
 logger = logging.getLogger(__name__)
@@ -27,11 +26,49 @@ async def investment_start(callback: CallbackQuery, state: FSMContext):
     await state.update_data(segment="investment")
     await add_step_to_path(state, "Недвижимость для инвестиций")
     
-    await callback.message.answer(
-        "Бюджет",
+    # === edit_text (заменяем предыдущее сообщение) ===
+    await callback.message.edit_text(
+        "Ваш бюджет",
         reply_markup=get_budget_keyboard("investment")
     )
     await state.set_state("investment:waiting_for_budget")
+    await callback.answer()
+
+@investment_router.callback_query(F.data.startswith("timeline_"))
+async def timeline_selected(callback: CallbackQuery, state: FSMContext):
+    current_state = await state.get_state()
+    
+    if current_state != "investment:waiting_for_timeline":
+        await callback.answer()
+        return
+        
+    # Обрабатываем timeline
+    timeline = callback.data.replace("timeline_", "")
+    timeline_text = {
+        "3months": "В течение 3-х месяцев",
+        "1year": "В течение года",
+        "no_plan": "Не планирую в этом году"
+    }.get(timeline, timeline)
+    
+    await state.update_data(timeline=timeline_text)
+    await add_step_to_path(state, f"Срок: {timeline_text}")
+    
+    # === СООБЩЕНИЕ С КАРТИНКОЙ: answer (новое сообщение) ===
+    try:
+        management_img = FSInputFile(config.management_image_path)
+        await callback.message.answer_photo(
+            photo=management_img,
+            caption="Вы планируете сдавать сами или через нашу УК?",
+            reply_markup=get_management_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки картинки управления: {e}")
+        await callback.message.answer(
+            "Вы планируете сдавать сами или через нашу УК?",
+            reply_markup=get_management_keyboard()
+        )
+    
+    await state.set_state("investment:waiting_for_management")
     await callback.answer()
 
 @investment_router.callback_query(F.data.startswith("management_"))
@@ -46,27 +83,20 @@ async def management_selected(callback: CallbackQuery, state: FSMContext):
     await state.update_data(management=management_text)
     await add_step_to_path(state, f"Управление: {management_text}")
     
-    await callback.message.answer(
-        "Продолжая диалог, Вы соглашаетесь с Политикой по обработке персональных данных",
-        reply_markup=get_policy_keyboard()
-    )
-    
-    # Второе сообщение - запрос контакта с картинкой
-    try:
-        management_img = FSInputFile(config.management_image_path)
-        await callback.message.answer_photo(
-            photo=management_img,
-            caption="Пожалуйста, авторизуйтесь, нажав кнопку внизу экрана.\n"
-                    "Ваши данные полностью защищены — обещаем, никаких навязчивых звонков",
-            reply_markup=get_contact_keyboard("investment")
-        )
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки картинки управления: {e}")
+    # === ПРОВЕРЯЕМ: если сообщение с фото - создаем новое, иначе заменяем ===
+    if callback.message.photo:
+        # Сообщение с фото - создаем новое
         await callback.message.answer(
-            "Пожалуйста, авторизуйтесь, нажав кнопку внизу экрана.\n"
-            "Ваши данные полностью защищены — обещаем, никаких навязчивых звонков",
-            reply_markup=get_contact_keyboard("investment")
+            "Продолжая диалог, Вы соглашаетесь с Политикой по обработке персональных данных",
+            reply_markup=get_policy_keyboard()
+        )
+    else:
+        # Обычное сообщение - заменяем
+        await callback.message.edit_text(
+            "Продолжая диалог, Вы соглашаетесь с Политикой по обработке персональных данных",
+            reply_markup=get_policy_keyboard()
         )
     
-    await state.set_state("investment:waiting_for_contact")
+    # Сразу переходим к запросу контакта с Reply-клавиатурой
+    await share_contact(callback, state)
     await callback.answer()

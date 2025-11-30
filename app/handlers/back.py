@@ -1,8 +1,7 @@
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, FSInputFile
+from aiogram.types import CallbackQuery
 from aiogram.fsm.context import FSMContext
 
-from app.core.config import config
 from app.keyboards.budget import get_budget_keyboard
 from app.keyboards.timeline import get_timeline_keyboard
 from app.keyboards.management import get_management_keyboard
@@ -15,20 +14,11 @@ back_router = Router()
 async def back_to_main(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     
-    # При возврате в главное меню отправляем картинку подписки
-    try:
-        subscribe_img = FSInputFile(config.subscribe_image_path)
-        await callback.message.answer_photo(
-            photo=subscribe_img,
-            caption="Выберите Ваш запрос:",
-            reply_markup=get_main_menu()
-        )
-    except Exception as e:
-        print(f"❌ Ошибка отправки картинки подписки: {e}")
-        await callback.message.edit_text(
-            "Выберите Ваш запрос:",
-            reply_markup=get_main_menu()
-        )
+    # === edit_text (заменяем предыдущее сообщение) ===
+    await callback.message.edit_text(
+        "Выберите Ваш запрос:",
+        reply_markup=get_main_menu()
+    )
     await callback.answer()
 
 @back_router.callback_query(F.data == "back_to_budget_investment")
@@ -40,6 +30,7 @@ async def back_to_budget_investment(callback: CallbackQuery, state: FSMContext):
         user_path.pop()
         await state.update_data(user_path=user_path)
     
+    # === edit_text (заменяем предыдущее сообщение) ===
     await callback.message.edit_text(
         "Бюджет",
         reply_markup=get_budget_keyboard("investment")
@@ -55,6 +46,7 @@ async def back_to_budget_living(callback: CallbackQuery, state: FSMContext):
         user_path.pop()
         await state.update_data(user_path=user_path)
     
+    # === edit_text (заменяем предыдущее сообщение) ===
     await callback.message.edit_text(
         "Бюджет",
         reply_markup=get_budget_keyboard("living")
@@ -70,10 +62,20 @@ async def back_to_timeline_investment(callback: CallbackQuery, state: FSMContext
         user_path.pop()
         await state.update_data(user_path=user_path)
     
-    await callback.message.edit_text(
-        "Когда планируете инвестировать?",
-        reply_markup=get_timeline_keyboard("investment")
-    )
+    # === ПРОВЕРЯЕМ: если сообщение с фото - создаем новое, иначе заменяем ===
+    if callback.message.photo:
+        # Сообщение с фото - создаем новое
+        await callback.message.answer(
+            "Когда планируете инвестировать?",
+            reply_markup=get_timeline_keyboard("investment")
+        )
+    else:
+        # Обычное сообщение - заменяем
+        await callback.message.edit_text(
+            "Когда планируете инвестировать?",
+            reply_markup=get_timeline_keyboard("investment")
+        )
+    
     await state.set_state("investment:waiting_for_timeline")
     await callback.answer()
 
@@ -85,10 +87,20 @@ async def back_to_timeline_living(callback: CallbackQuery, state: FSMContext):
         user_path.pop()
         await state.update_data(user_path=user_path)
     
-    await callback.message.edit_text(
-        "Когда планируете приобретать?",
-        reply_markup=get_timeline_keyboard("living")
-    )
+    # === ПРОВЕРЯЕМ: если сообщение с фото - создаем новое, иначе заменяем ===
+    if callback.message.photo:
+        # Сообщение с фото - создаем новое
+        await callback.message.answer(
+            "Когда планируете приобретать?",
+            reply_markup=get_timeline_keyboard("living")
+        )
+    else:
+        # Обычное сообщение - заменяем
+        await callback.message.edit_text(
+            "Когда планируете приобретать?",
+            reply_markup=get_timeline_keyboard("living")
+        )
+    
     await state.set_state("living:waiting_for_timeline")
     await callback.answer()
 
@@ -100,10 +112,20 @@ async def back_to_management_investment(callback: CallbackQuery, state: FSMConte
         user_path.pop()
         await state.update_data(user_path=user_path)
     
-    await callback.message.edit_text(
-        "Вы планируете сдавать сами или через нашу УК?",
-        reply_markup=get_management_keyboard()
-    )
+    # === ПРОВЕРЯЕМ: если сообщение с фото - создаем новое, иначе заменяем ===
+    if callback.message.photo:
+        # Сообщение с фото - создаем новое
+        await callback.message.answer(
+            "Вы планируете сдавать сами или через нашу УК?",
+            reply_markup=get_management_keyboard()
+        )
+    else:
+        # Обычное сообщение - заменяем
+        await callback.message.edit_text(
+            "Вы планируете сдавать сами или через нашу УК?",
+            reply_markup=get_management_keyboard()
+        )
+    
     await state.set_state("investment:waiting_for_management")
     await callback.answer()
 
@@ -115,6 +137,7 @@ async def back_to_experience(callback: CallbackQuery, state: FSMContext):
         user_path.pop()
         await state.update_data(user_path=user_path)
     
+    # === edit_text (заменяем предыдущее сообщение) ===
     await callback.message.edit_text(
         "Ранее уже работали с нами?",
         reply_markup=get_experience_keyboard()
@@ -134,10 +157,19 @@ async def back_to_budget_generic(callback: CallbackQuery, state: FSMContext):
     # Определяем сегмент из состояния
     current_state = await state.get_state()
     if current_state == "living:waiting_for_timeline":
-        await callback.message.edit_text(
-            "Бюджет",
-            reply_markup=get_budget_keyboard("living")
-        )
+        # === ПРОВЕРЯЕМ: если сообщение с фото - создаем новое, иначе заменяем ===
+        if callback.message.photo:
+            # Сообщение с фото - создаем новое
+            await callback.message.answer(
+                "Бюджет",
+                reply_markup=get_budget_keyboard("living")
+            )
+        else:
+            # Обычное сообщение - заменяем
+            await callback.message.edit_text(
+                "Бюджет",
+                reply_markup=get_budget_keyboard("living")
+            )
         await state.set_state("living:waiting_for_budget")
     else:
         # По умолчанию возвращаем в главное меню

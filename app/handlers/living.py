@@ -4,7 +4,6 @@ from aiogram.fsm.context import FSMContext
 
 from app.keyboards.budget import get_budget_keyboard
 from app.keyboards.timeline import get_timeline_keyboard
-from app.keyboards.contact import get_contact_keyboard, get_policy_keyboard
 
 living_router = Router()
 
@@ -21,7 +20,8 @@ async def living_start(callback: CallbackQuery, state: FSMContext):
     await state.update_data(segment="living")
     await add_step_to_path(state, "Недвижимость для жизни")
     
-    await callback.message.answer(
+    # === edit_text (заменяем предыдущее сообщение) ===
+    await callback.message.edit_text(
         "Бюджет",
         reply_markup=get_budget_keyboard("living")
     )

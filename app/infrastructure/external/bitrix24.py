@@ -9,7 +9,7 @@ class Bitrix24Client:
     def __init__(self, webhook_url: str):
         self.webhook_url = webhook_url
         self.session = None
-        self.telegram_source_id = '79673596604'
+        self.telegram_source_id = '79673596604'  # === ИСПОЛЬЗУЕМ СУЩЕСТВУЮЩИЙ ИСТОЧНИК ===
 
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -19,86 +19,86 @@ class Bitrix24Client:
         if self.session:
             await self.session.close()
 
-    async def create_contact(self, contact_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def create_lead(self, lead_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Создает контакт в Bitrix24 с существующим источником 'ТГ бот'
+        Создает лид в Bitrix24 с существующим источником 'ТГ бот'
         """
         try:
-            utm_source = contact_data.get('utm_source', 'organic')
+            utm_source = lead_data.get('utm_source', 'organic')
             
             # Подготавливаем данные для Bitrix24
             bitrix_data = {
                 'fields': {
-                    'TITLE': f"Контакт из Telegram: {contact_data.get('first_name', '')} {contact_data.get('last_name', '')}",
-                    'NAME': contact_data.get('first_name', ''),
-                    'LAST_NAME': contact_data.get('last_name', ''),
-                    'SOURCE_ID': self.telegram_source_id,
+                    'TITLE': f"Лид из Telegram: {lead_data.get('first_name', '')} {lead_data.get('last_name', '')}",
+                    'NAME': lead_data.get('first_name', ''),
+                    'LAST_NAME': lead_data.get('last_name', ''),
+                    'SOURCE_ID': self.telegram_source_id,  # Используем существующий источник
                     'SOURCE_DESCRIPTION': f"UTM: {utm_source}",
-                    'COMMENTS': self._format_comments(contact_data)
+                    'COMMENTS': self._format_comments(lead_data)
                 }
             }
 
             # Добавляем телефон если есть
-            if contact_data.get('phone'):
+            if lead_data.get('phone'):
                 bitrix_data['fields']['PHONE'] = [{
-                    'VALUE': contact_data.get('phone'), 
+                    'VALUE': lead_data.get('phone'), 
                     'VALUE_TYPE': 'WORK'
                 }]
 
-            logger.info(f"Отправка контакта в Bitrix24 с источником ID: {self.telegram_source_id}")
+            logger.info(f"Отправка лида в Bitrix24 с источником ID: {self.telegram_source_id}")
 
             async with self.session.post(
-                f"{self.webhook_url}/crm.contact.add",
+                f"{self.webhook_url}/crm.lead.add",
                 json=bitrix_data,
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as response:
                 result = await response.json()
-                
-                # Безопасное логирование ответа
+                logger.info(f"Ответ от Bitrix24: {result}")
+
                 if response.status == 200 and 'result' in result:
-                    logger.info(f"✅ Контакт создан в Bitrix24, ID: {result['result']}")
-                    return {'success': True, 'contact_id': result['result']}
+                    return {'success': True, 'lead_id': result['result']}
                 else:
                     error_msg = result.get('error_description', 'Unknown error')
-                    logger.error(f"❌ Ошибка Bitrix24: {error_msg}")
+                    logger.error(f"Ошибка Bitrix24: {error_msg}")
                     return {'success': False, 'error': error_msg}
 
         except Exception as e:
-            logger.error(f"❌ Ошибка при отправке в Bitrix24: {e}")
+            logger.error(f"Ошибка при отправке в Bitrix24: {e}")
             return {'success': False, 'error': str(e)}
 
-    def _format_comments(self, contact_data: Dict[str, Any]) -> str:
+    def _format_comments(self, lead_data: Dict[str, Any]) -> str:
         """Форматирует комментарий для Bitrix24"""
         comments = [
             "📋 ДАННЫЕ ИЗ TELEGRAM БОТА",
             "=" * 35,
-            f"👤 User ID: {contact_data.get('id', contact_data.get('user_id', 'N/A'))}",
-            f"🔗 Username: @{contact_data.get('username', 'N/A')}",
-            f"🏷️ UTM Source: {contact_data.get('utm_source', 'organic')}",
-            f"📊 Сегмент: {contact_data.get('segment', 'unknown')}",
+            f"👤 User ID: {lead_data.get('id', lead_data.get('user_id', 'N/A'))}",
+            f"🔗 Username: @{lead_data.get('username', 'N/A')}",
+            f"🏷️ UTM Source: {lead_data.get('utm_source', 'organic')}",
+            f"📊 Сегмент: {lead_data.get('segment', 'unknown')}",
+            f"📞 Телефон: {lead_data.get('phone', 'не указан')}",
             "",  # Пустая строка для разделения
         ]
 
         # Добавляем дополнительные данные в зависимости от сегмента
         additional_data = []
-        if contact_data.get('budget'):
-            additional_data.append(f"💰 Бюджет: {contact_data.get('budget')}")
-        if contact_data.get('timeline'):
-            additional_data.append(f"⏰ Срок: {contact_data.get('timeline')}")
-        if contact_data.get('management'):
-            additional_data.append(f"🏢 Управление: {contact_data.get('management')}")
-        if contact_data.get('experience'):
-            additional_data.append(f"💼 Опыт: {contact_data.get('experience')}")
+        if lead_data.get('budget'):
+            additional_data.append(f"💰 Бюджет: {lead_data.get('budget')}")
+        if lead_data.get('timeline'):
+            additional_data.append(f"⏰ Срок: {lead_data.get('timeline')}")
+        if lead_data.get('management'):
+            additional_data.append(f"🏢 Управление: {lead_data.get('management')}")
+        if lead_data.get('experience'):
+            additional_data.append(f"💼 Опыт: {lead_data.get('experience')}")
         
         if additional_data:
             comments.extend(additional_data)
             comments.append("")  # Пустая строка для разделения
 
         # Путь пользователя
-        if contact_data.get('user_path'):
+        if lead_data.get('user_path'):
             comments.append("🛣️ ПУТЬ ПОЛЬЗОВАТЕЛЯ:")
             comments.append("-" * 25)
-            for i, step in enumerate(contact_data.get('user_path', []), 1):
+            for i, step in enumerate(lead_data.get('user_path', []), 1):
                 comments.append(f"{i}. {step}")
 
         return "\n".join(comments)
@@ -116,11 +116,11 @@ async def init_bitrix_client(webhook_url: str):
     else:
         logger.warning("⚠️ Bitrix24 webhook URL не указан, интеграция отключена")
 
-async def create_bitrix_contact(contact_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Создает контакт в Bitrix24 (обертка для глобального клиента)"""
+async def create_bitrix_lead(lead_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Создает лид в Bitrix24 (обертка для глобального клиента)"""
     global bitrix_client
     if not bitrix_client:
         return {'success': False, 'error': 'Bitrix24 клиент не инициализирован'}
     
     async with bitrix_client as client:
-        return await client.create_contact(contact_data)
+        return await client.create_lead(lead_data)

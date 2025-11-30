@@ -2,8 +2,9 @@ from aiogram import Router, F
 from aiogram.types import CallbackQuery
 from aiogram.fsm.context import FSMContext
 
-from app.keyboards.contact import get_contact_keyboard, get_policy_keyboard
+from app.keyboards.contact import get_policy_keyboard
 from app.keyboards.experience import get_experience_keyboard
+from app.handlers.contact import share_contact
 
 manager_router = Router()
 
@@ -20,7 +21,8 @@ async def manager_start(callback: CallbackQuery, state: FSMContext):
     await state.update_data(segment="manager")
     await add_step_to_path(state, "Связаться с менеджером")
     
-    await callback.message.answer(
+    # === edit_text (заменяем предыдущее сообщение) ===
+    await callback.message.edit_text(
         "Ранее уже работали с нами?",
         reply_markup=get_experience_keyboard()
     )
@@ -40,22 +42,12 @@ async def experience_selected(callback: CallbackQuery, state: FSMContext):
     await add_step_to_path(state, f"Опыт: {experience_text}")
     
     if experience == "new":
-        # Новый клиент - стандартный поток
-        await callback.message.answer(
+        # === СООБЩЕНИЕ С ПОЛИТИКОЙ: edit_text (заменяем предыдущее сообщение) ===
+        await callback.message.edit_text(
             "Продолжая диалог, Вы соглашаетесь с Политикой по обработке персональных данных",
             reply_markup=get_policy_keyboard()
         )
-        await callback.message.answer(
-            "Пожалуйста, авторизуйтесь, нажав кнопку внизу экрана.\n"
-            "Ваши данные полностью защищены — обещаем, никаких навязчивых звонков",
-            reply_markup=get_contact_keyboard("manager")
-        )
-    else:
-        # Уже инвестировал - упрощенный поток
-        await callback.message.answer(
-            "Пожалуйста, оставьте свой номер телефона, и мы передадим его персональному менеджеру",
-            reply_markup=get_contact_keyboard("manager")
-        )
     
-    await state.set_state("manager:waiting_for_contact")
+    # Сразу переходим к запросу контакта с Reply-клавиатурой
+    await share_contact(callback, state)
     await callback.answer()

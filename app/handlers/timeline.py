@@ -1,10 +1,15 @@
 from aiogram import Router, F
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
 
+from app.core.config import config
 from app.keyboards.timeline import get_timeline_keyboard
 from app.keyboards.management import get_management_keyboard
-from app.keyboards.contact import get_contact_keyboard, get_policy_keyboard
+from app.keyboards.contact import get_policy_keyboard
+from app.handlers.contact import share_contact
+import logging
+
+logger = logging.getLogger(__name__)
 
 timeline_router = Router()
 
@@ -34,24 +39,32 @@ async def universal_timeline_handler(callback: CallbackQuery, state: FSMContext)
     
     # В зависимости от сегмента переходим к следующему шагу
     if segment == "investment":
-        await callback.message.edit_text(
-            "Вы планируете сдавать сами или через нашу УК?",
-            reply_markup=get_management_keyboard()
-        )
+        # === СООБЩЕНИЕ С КАРТИНКОЙ: answer (новое сообщение) ===
+        try:
+            management_img = FSInputFile(config.management_image_path)
+            await callback.message.answer_photo(
+                photo=management_img,
+                caption="Вы планируете сдавать сами или через нашу УК?",
+                reply_markup=get_management_keyboard()
+            )
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки картинки управления: {e}")
+            await callback.message.answer(
+                "Вы планируете сдавать сами или через нашу УК?",
+                reply_markup=get_management_keyboard()
+            )
         await state.set_state("investment:waiting_for_management")
         
     elif segment == "living":
         # Переход к сбору контактов
-        await callback.message.edit_text(
+        # === СООБЩЕНИЕ С ПОЛИТИКОЙ: answer (новое сообщение) ===
+        await callback.message.answer(
             "Продолжая диалог, Вы соглашаетесь с Политикой по обработке персональных данных",
             reply_markup=get_policy_keyboard()
         )
-        await callback.message.answer(
-            "Пожалуйста, авторизуйтесь, нажав кнопку внизу экрана.\n"
-            "Ваши данные полностью защищены — обещаем, никаких навязчивых звонков",
-            reply_markup=get_contact_keyboard("living")
-        )
-        await state.set_state("living:waiting_for_contact")
+        
+        # Сразу переходим к запросу контакта с Reply-клавиатурой
+        await share_contact(callback, state)
     
     else:
         # fallback
