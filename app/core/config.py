@@ -36,6 +36,12 @@ class Config:
         "utm_sublease": "Субаренда"
     }
     
+    # Переписка админа с пользователями
+    ENABLE_ADMIN_CHAT = os.getenv("ENABLE_ADMIN_CHAT", "true").lower() == "true"
+    
+    # Автоматические миграции
+    AUTO_MIGRATE = os.getenv("AUTO_MIGRATE", "true").lower() == "true"
+    
     # Пути (для медиафайлов все равно нужны)
     @property
     def base_dir(self):

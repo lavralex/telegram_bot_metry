@@ -20,7 +20,7 @@ class LeadService:
             "management": state_data.get("management"),
             "experience": state_data.get("experience"),
             "user_path": state_data.get("user_path", []),
-            "status": LeadStatus.NEW
+            "status": LeadStatus.NEW.value  # Используем значение enum
         }
         
         return self.lead_repository.create_lead(lead_data)

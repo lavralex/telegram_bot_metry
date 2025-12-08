@@ -41,12 +41,14 @@ async def experience_selected(callback: CallbackQuery, state: FSMContext):
     await state.update_data(experience=experience_text)
     await add_step_to_path(state, f"Опыт: {experience_text}")
     
-    if experience == "new":
-        # === СООБЩЕНИЕ С ПОЛИТИКОЙ: edit_text (заменяем предыдущее сообщение) ===
-        await callback.message.edit_text(
-            "Продолжая диалог, Вы соглашаетесь с Политикой по обработке персональных данных",
-            reply_markup=get_policy_keyboard()
-        )
+    # === ИСПРАВЛЕНИЕ: показываем политику для ЛЮБОГО выбора ===
+    # Для нового и старого клиента одинаково
+    
+    # === СООБЩЕНИЕ С ПОЛИТИКОЙ: edit_text (заменяем предыдущее сообщение) ===
+    await callback.message.edit_text(
+        "Продолжая диалог, Вы соглашаетесь с Политикой по обработке персональных данных",
+        reply_markup=get_policy_keyboard()
+    )
     
     # Сразу переходим к запросу контакта с Reply-клавиатурой
     await share_contact(callback, state)

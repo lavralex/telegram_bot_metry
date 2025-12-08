@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func
 from typing import List, Optional
-from app.infrastructure.database.models import Lead, LinkClick, LeadStatus
+from app.infrastructure.database.models import Lead, LinkClick, LeadStatus  # LeadStatus теперь доступен
 from datetime import datetime, timedelta
 
 class LeadRepository:
@@ -24,7 +24,7 @@ class LeadRepository:
     def update_lead_status(self, lead_id: int, status: LeadStatus) -> Optional[Lead]:
         lead = self.get_lead_by_id(lead_id)
         if lead:
-            lead.status = status
+            lead.status = status.value  # Используем значение enum
             lead.updated_at = datetime.utcnow()
             self.db.commit()
             self.db.refresh(lead)

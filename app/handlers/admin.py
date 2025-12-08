@@ -12,11 +12,18 @@ import os
 
 from app.core.config import config
 from app.core.dependencies import get_lead_repository, get_link_click_repository
-from app.infrastructure.database.models import Lead, Broadcast, BroadcastStatus
+from app.infrastructure.database.models import Lead, Broadcast
 from app.core.database import SessionLocal
 from app.application.services.broadcast_service import broadcast_service
 
 admin_router = Router()
+
+BROADCAST_STATUS_EMOJI = {
+    'draft': "📝",
+    'scheduled': "⏰", 
+    'sent': "✅",
+    'cancelled': "❌"
+}
 
 # Фильтр для проверки админа
 def is_admin(user_id: int) -> bool:
@@ -68,37 +75,41 @@ async def admin_stats(message: Message):
     lead_repo = get_lead_repository()
     click_repo = get_link_click_repository()
     
-    # Общая статистика
-    today_leads = lead_repo.get_today_leads()
-    total_leads = len(today_leads)
-    total_clicks = click_repo.get_clicks_count()
-    
-    # Статистика по сегментам
-    leads_by_segment = lead_repo.get_leads_count_by_segment()
-    
-    # Популярные UTM
-    popular_utm = click_repo.get_popular_utm_sources(5)
-    
-    # Конверсия (упрощенная)
-    conversion = (total_leads / total_clicks * 100) if total_clicks > 0 else 0
-    
-    stats_text = (
-        "📊 **СТАТИСТИКА ЗА СЕГОДНЯ**\n\n"
-        f"🎯 Лидов: **{total_leads}**\n"
-        f"🖱️ Переходов: **{total_clicks}**\n"
-        f"📈 Конверсия: **{conversion:.1f}%**\n\n"
-        "**Лиды по сегментам:**\n"
-    )
-    
-    for segment, count in leads_by_segment.items():
-        stats_text += f"  • {segment}: {count}\n"
-    
-    stats_text += "\n**Топ UTM меток:**\n"
-    for utm in popular_utm:
-        leads_count = lead_repo.db.query(Lead).filter(Lead.utm_source == utm['utm_source']).count()
-        stats_text += f"  • {utm['utm_source']}: {utm['clicks']} кликов, {leads_count} лидов\n"
-    
-    await message.answer(stats_text)
+    try:
+        # Общая статистика
+        today_leads = lead_repo.get_today_leads()
+        total_leads = len(today_leads)
+        total_clicks = click_repo.get_clicks_count()
+        
+        # Статистика по сегментам
+        leads_by_segment = lead_repo.get_leads_count_by_segment()
+        
+        # Популярные UTM
+        popular_utm = click_repo.get_popular_utm_sources(5)
+        
+        # Конверсия (упрощенная)
+        conversion = (total_leads / total_clicks * 100) if total_clicks > 0 else 0
+        
+        stats_text = (
+            "📊 **СТАТИСТИКА ЗА СЕГОДНЯ**\n\n"
+            f"🎯 Лидов: **{total_leads}**\n"
+            f"🖱️ Переходов: **{total_clicks}**\n"
+            f"📈 Конверсия: **{conversion:.1f}%**\n\n"
+            "**Лиды по сегментам:**\n"
+        )
+        
+        for segment, count in leads_by_segment.items():
+            stats_text += f"  • {segment}: {count}\n"
+        
+        stats_text += "\n**Топ UTM меток:**\n"
+        for utm in popular_utm:
+            leads_count = lead_repo.db.query(Lead).filter(Lead.utm_source == utm['utm_source']).count()
+            stats_text += f"  • {utm['utm_source']}: {utm['clicks']} кликов, {leads_count} лидов\n"
+        
+        await message.answer(stats_text)
+    finally:
+        lead_repo.db.close()
+        click_repo.db.close()
 
 # Детальная статистика по UTM
 @admin_router.message(Command("utm_stats"))
@@ -116,22 +127,27 @@ async def admin_utm_stats(message: Message, command: CommandObject):
         return
     
     utm_source = args.strip()
-    clicks = click_repo.get_clicks_count(utm_source)
-    leads = lead_repo.db.query(Lead).filter(Lead.utm_source == utm_source).all()
     
-    stats_text = (
-        f"📊 **СТАТИСТИКА ПО UTM:** {utm_source}\n\n"
-        f"🖱️ Кликов: **{clicks}**\n"
-        f"🎯 Лидов: **{len(leads)}**\n"
-        f"📈 Конверсия: **{(len(leads)/clicks*100 if clicks > 0 else 0):.1f}%**\n\n"
-    )
-    
-    if leads:
-        stats_text += "**Последние лиды:**\n"
-        for lead in leads[:5]:  # Последние 5 лидов
-            stats_text += f"  • {lead.first_name} {lead.last_name} - {lead.phone} ({lead.created_at.strftime('%H:%M')})\n"
-    
-    await message.answer(stats_text)
+    try:
+        clicks = click_repo.get_clicks_count(utm_source)
+        leads = lead_repo.db.query(Lead).filter(Lead.utm_source == utm_source).all()
+        
+        stats_text = (
+            f"📊 **СТАТИСТИКА ПО UTM:** {utm_source}\n\n"
+            f"🖱️ Кликов: **{clicks}**\n"
+            f"🎯 Лидов: **{len(leads)}**\n"
+            f"📈 Конверсия: **{(len(leads)/clicks*100 if clicks > 0 else 0):.1f}%**\n\n"
+        )
+        
+        if leads:
+            stats_text += "**Последние лиды:**\n"
+            for lead in leads[:5]:  # Последние 5 лидов
+                stats_text += f"  • {lead.first_name} {lead.last_name} - {lead.phone} ({lead.created_at.strftime('%H:%M')})\n"
+        
+        await message.answer(stats_text)
+    finally:
+        lead_repo.db.close()
+        click_repo.db.close()
 
 # Просмотр лидов
 @admin_router.message(Command("leads"))
@@ -142,35 +158,38 @@ async def admin_leads(message: Message, command: CommandObject):
 
     lead_repo = get_lead_repository()
     
-    # Проверяем есть ли аргумент для фильтрации по сегменту
-    args = command.args
-    if args:
-        today_leads = lead_repo.get_leads_by_segment(args)
-    else:
-        today_leads = lead_repo.get_today_leads()
-    
-    if not today_leads:
-        segment_text = f" ({args})" if args else ""
-        await message.answer(f"📭 Лидов за сегодня{segment_text} нет")
-        return
-    
-    segment_text = f" ({args})" if args else ""
-    leads_text = f"🎯 **ПОСЛЕДНИЕ ЛИДЫ{segment_text}**\n\n"
-    
-    for lead in today_leads[:10]:  # Последние 10 лидов
-        phone_display = lead.phone if lead.phone else "❌ не указан"
-        budget_display = lead.budget if lead.budget else "не указан"
+    try:
+        # Проверяем есть ли аргумент для фильтрации по сегменту
+        args = command.args
+        if args:
+            today_leads = lead_repo.get_leads_by_segment(args)
+        else:
+            today_leads = lead_repo.get_today_leads()
         
-        leads_text += (
-            f"👤 **{lead.first_name} {lead.last_name or ''}**\n"
-            f"📞 {phone_display}\n"
-            f"🏷️ {lead.segment} | {lead.utm_source}\n"
-            f"💰 {budget_display}\n"
-            f"⏰ {lead.created_at.strftime('%H:%M')}\n"
-            f"---\n"
-        )
-    
-    await message.answer(leads_text)
+        if not today_leads:
+            segment_text = f" ({args})" if args else ""
+            await message.answer(f"📭 Лидов за сегодня{segment_text} нет")
+            return
+        
+        segment_text = f" ({args})" if args else ""
+        leads_text = f"🎯 **ПОСЛЕДНИЕ ЛИДЫ{segment_text}**\n\n"
+        
+        for lead in today_leads[:10]:  # Последние 10 лидов
+            phone_display = lead.phone if lead.phone else "❌ не указан"
+            budget_display = lead.budget if lead.budget else "не указан"
+            
+            leads_text += (
+                f"👤 **{lead.first_name} {lead.last_name or ''}**\n"
+                f"📞 {phone_display}\n"
+                f"🏷️ {lead.segment} | {lead.utm_source}\n"
+                f"💰 {budget_display}\n"
+                f"⏰ {lead.created_at.strftime('%H:%M')}\n"
+                f"---\n"
+            )
+        
+        await message.answer(leads_text)
+    finally:
+        lead_repo.db.close()
 
 # Генератор UTM ссылок
 @admin_router.message(Command("links"))
@@ -183,25 +202,30 @@ async def admin_links(message: Message):
     lead_repo = get_lead_repository()
     
     bot_username = (await message.bot.get_me()).username
-    links_text = "🔗 **UTM ССЫЛКИ ДЛЯ РЕКЛАМЫ**\n\n"
     
-    # === ИЗМЕНЕНИЕ: Используем английские UTM ключи для ссылок ===
-    for utm_key, utm_name in config.UTM_SEGMENTS.items():
-        clicks = click_repo.get_clicks_count(utm_key)
-        leads_count = lead_repo.db.query(Lead).filter(Lead.utm_source == utm_key).count()
-        conversion = (leads_count / clicks * 100) if clicks > 0 else 0
+    try:
+        links_text = "🔗 **UTM ССЫЛКИ ДЛЯ РЕКЛАМЫ**\n\n"
         
-        link = f"https://t.me/{bot_username}?start={utm_key}"
+        # === ИСПОЛЬЗУЕМ английские UTM ключи для ссылок ===
+        for utm_key, utm_name in config.UTM_SEGMENTS.items():
+            clicks = click_repo.get_clicks_count(utm_key)
+            leads_count = lead_repo.db.query(Lead).filter(Lead.utm_source == utm_key).count()
+            conversion = (leads_count / clicks * 100) if clicks > 0 else 0
+            
+            link = f"https://t.me/{bot_username}?start={utm_key}"
+            
+            links_text += (
+                f"**{utm_name}**\n"
+                f"`{link}`\n"
+                f"🖱️ Кликов: {clicks} | 🎯 Лидов: {leads_count} | 📈 {conversion:.1f}%\n\n"
+            )
         
-        links_text += (
-            f"**{utm_name}**\n"
-            f"`{link}`\n"
-            f"🖱️ Кликов: {clicks} | 🎯 Лидов: {leads_count} | 📈 {conversion:.1f}%\n\n"
-        )
-    
-    links_text += "💡 *Нажмите на ссылку чтобы скопировать*"
-    
-    await message.answer(links_text)
+        links_text += "💡 *Нажмите на ссылку чтобы скопировать*"
+        
+        await message.answer(links_text)
+    finally:
+        click_repo.db.close()
+        lead_repo.db.close()
 
 # Экспорт данных
 @admin_router.message(Command("export"))
@@ -212,60 +236,63 @@ async def admin_export(message: Message, command: CommandObject):
 
     lead_repo = get_lead_repository()
     
-    # Проверяем аргументы для фильтрации
-    args = command.args
-    if args and args in ['today', 'all']:
-        if args == 'today':
-            all_leads = lead_repo.get_today_leads()
-            filename_suffix = "today"
-        else:  # 'all'
+    try:
+        # Проверяем аргументы для фильтрации
+        args = command.args
+        if args and args in ['today', 'all']:
+            if args == 'today':
+                all_leads = lead_repo.get_today_leads()
+                filename_suffix = "today"
+            else:  # 'all'
+                all_leads = lead_repo.db.query(Lead).all()
+                filename_suffix = "all"
+        else:
+            # По умолчанию - все лиды
             all_leads = lead_repo.db.query(Lead).all()
             filename_suffix = "all"
-    else:
-        # По умолчанию - все лиды
-        all_leads = lead_repo.db.query(Lead).all()
-        filename_suffix = "all"
-    
-    if not all_leads:
-        await message.answer("📭 Нет данных для экспорта")
-        return
-    
-    # Создаем DataFrame
-    data = []
-    for lead in all_leads:
-        data.append({
-            'ID': lead.id,
-            'Дата': lead.created_at.strftime('%Y-%m-%d %H:%M'),
-            'Имя': lead.first_name,
-            'Фамилия': lead.last_name,
-            'Username': f"@{lead.username}" if lead.username else "",
-            'Телефон': lead.phone,
-            'Сегмент': lead.segment,
-            'UTM': lead.utm_source,
-            'Бюджет': lead.budget,
-            'Срок': lead.timeline,
-            'Управление': lead.management,
-            'Опыт': lead.experience,
-            'Статус': lead.status
-        })
-    
-    df = pd.DataFrame(data)
-    
-    # Создаем Excel файл в памяти
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, sheet_name='Лиды', index=False)
-    
-    output.seek(0)
-    excel_data = output.getvalue()
-    
-    # Используем BufferedInputFile для отправки
-    filename = f"leads_export_{filename_suffix}_{datetime.now().strftime('%Y-%m-%d')}.xlsx"
-    
-    await message.answer_document(
-        document=BufferedInputFile(excel_data, filename=filename),
-        caption=f"📊 Экспорт лидов ({filename_suffix}) - {len(all_leads)} записей"
-    )
+        
+        if not all_leads:
+            await message.answer("📭 Нет данных для экспорта")
+            return
+        
+        # Создаем DataFrame
+        data = []
+        for lead in all_leads:
+            data.append({
+                'ID': lead.id,
+                'Дата': lead.created_at.strftime('%Y-%m-%d %H:%M'),
+                'Имя': lead.first_name,
+                'Фамилия': lead.last_name,
+                'Username': f"@{lead.username}" if lead.username else "",
+                'Телефон': lead.phone,
+                'Сегмент': lead.segment,
+                'UTM': lead.utm_source,
+                'Бюджет': lead.budget,
+                'Срок': lead.timeline,
+                'Управление': lead.management,
+                'Опыт': lead.experience,
+                'Статус': lead.status
+            })
+        
+        df = pd.DataFrame(data)
+        
+        # Создаем Excel файл в памяти
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Лиды', index=False)
+        
+        output.seek(0)
+        excel_data = output.getvalue()
+        
+        # Используем BufferedInputFile для отправки
+        filename = f"leads_export_{filename_suffix}_{datetime.now().strftime('%Y-%m-%d')}.xlsx"
+        
+        await message.answer_document(
+            document=BufferedInputFile(excel_data, filename=filename),
+            caption=f"📊 Экспорт лидов ({filename_suffix}) - {len(all_leads)} записей"
+        )
+    finally:
+        lead_repo.db.close()
 
 # Создание рассылки
 @admin_router.message(Command("broadcast"))
@@ -360,7 +387,7 @@ async def process_broadcast_time(message: Message, state: FSMContext):
                 message_text=data['text'],
                 photo_url=data.get('photo'),
                 scheduled_time=send_time,
-                status=BroadcastStatus.SCHEDULED.value,
+                status="scheduled",
                 created_by=message.from_user.id
             )
             db.add(broadcast)
@@ -453,24 +480,27 @@ def parse_time_input(time_input: str) -> datetime:
 async def send_broadcast(bot, text: str, photo: str = None) -> tuple[int, int]:
     """Отправка рассылки всем пользователям из базы"""
     lead_repo = get_lead_repository()
-    users = set(lead.user_id for lead in lead_repo.db.query(Lead).all())
-    
-    success = 0
-    failed = 0
-    
-    for user_id in users:
-        try:
-            if photo:
-                await bot.send_photo(user_id, photo, caption=text)
-            else:
-                await bot.send_message(user_id, text)
-            success += 1
-            await asyncio.sleep(0.05)  # Чтобы не превысить лимиты Telegram (30 сообщений/секунду)
-        except Exception as e:
-            print(f"❌ Ошибка отправки пользователю {user_id}: {e}")
-            failed += 1
-    
-    return success, failed
+    try:
+        users = set(lead.user_id for lead in lead_repo.db.query(Lead).all())
+        
+        success = 0
+        failed = 0
+        
+        for user_id in users:
+            try:
+                if photo:
+                    await bot.send_photo(user_id, photo, caption=text)
+                else:
+                    await bot.send_message(user_id, text)
+                success += 1
+                await asyncio.sleep(0.05)  # Чтобы не превысить лимиты Telegram (30 сообщений/секунду)
+            except Exception as e:
+                print(f"❌ Ошибка отправки пользователю {user_id}: {e}")
+                failed += 1
+        
+        return success, failed
+    finally:
+        lead_repo.db.close()
 
 # Просмотр запланированных рассылок
 @admin_router.message(Command("broadcasts"))
@@ -480,36 +510,32 @@ async def admin_broadcasts(message: Message):
         return
 
     db = SessionLocal()
-    broadcasts = db.query(Broadcast).order_by(Broadcast.scheduled_time.desc()).limit(10).all()
-    
-    if not broadcasts:
-        await message.answer("📭 Нет запланированных рассылок")
+    try:
+        broadcasts = db.query(Broadcast).order_by(Broadcast.scheduled_time.desc()).limit(10).all()
+        
+        if not broadcasts:
+            await message.answer("📭 Нет запланированных рассылок")
+            return
+        
+        broadcasts_text = "📢 **ЗАПЛАНИРОВАННЫЕ РАССЫЛКИ**\n\n"
+        
+        for broadcast in broadcasts:
+            status_emoji = BROADCAST_STATUS_EMOJI.get(broadcast.status, "❓")
+            
+            # Показываем время по Москве (добавляем 3 часа)
+            moscow_time = broadcast.scheduled_time + timedelta(hours=3)
+            
+            broadcasts_text += (
+                f"{status_emoji} **{broadcast.title}**\n"
+                f"⏰ {moscow_time.strftime('%d.%m.%Y %H:%M')} по Москве\n"
+                f"📝 {broadcast.message_text[:50]}...\n"
+                f"📊 Статус: {broadcast.status}\n"
+                f"---\n"
+            )
+        
+        await message.answer(broadcasts_text)
+    finally:
         db.close()
-        return
-    
-    broadcasts_text = "📢 **ЗАПЛАНИРОВАННЫЕ РАССЫЛКИ**\n\n"
-    
-    for broadcast in broadcasts:
-        status_emoji = {
-            'draft': "📝",
-            'scheduled': "⏰", 
-            'sent': "✅",
-            'cancelled': "❌"
-        }.get(broadcast.status, "❓")
-        
-        # Показываем время по Москве (добавляем 3 часа)
-        moscow_time = broadcast.scheduled_time + timedelta(hours=3)
-        
-        broadcasts_text += (
-            f"{status_emoji} **{broadcast.title}**\n"
-            f"⏰ {moscow_time.strftime('%d.%m.%Y %H:%M')} по Москве\n"
-            f"📝 {broadcast.message_text[:50]}...\n"
-            f"📊 Статус: {broadcast.status}\n"
-            f"---\n"
-        )
-    
-    db.close()
-    await message.answer(broadcasts_text)
 
 # Быстрая рассылка (без состояний)
 @admin_router.message(Command("quick_send"))
@@ -568,6 +594,10 @@ async def admin_help(message: Message):
         "• /broadcast - создание рассылки (текст + фото + время)\n"
         "• /broadcasts - просмотр запланированных рассылок\n"
         "• /quick_send [текст] - быстрая рассылка (только текст)\n\n"
+        
+        "💬 **Переписка с пользователями:**\n"
+        "• /unread - непрочитанные сообщения\n"
+        "• /toggle_chat - включить/выключить переписку\n\n"
         
         "🆔 **Утилиты:**\n"
         "• /myid - узнать свой Telegram ID\n\n"

@@ -4,7 +4,7 @@ from sqlalchemy import and_
 import logging
 
 from app.core.database import SessionLocal
-from app.infrastructure.database.models import Broadcast, BroadcastStatus
+from app.infrastructure.database.models import Broadcast
 from app.core.dependencies import get_lead_repository
 from app.infrastructure.database.models import Lead
 
@@ -13,7 +13,7 @@ class BroadcastService:
         self.bot = bot
         self.is_running = False
         self.scheduler_task = None
-        self.logger = logging.getLogger('bot.broadcast')  # === ДОБАВЛЕНИЕ ===
+        self.logger = logging.getLogger('bot.broadcast')
 
     async def start_scheduler(self):
         """Запускает планировщик рассылок"""
@@ -53,7 +53,7 @@ class BroadcastService:
             
             broadcasts = db.query(Broadcast).filter(
                 and_(
-                    Broadcast.status == BroadcastStatus.SCHEDULED.value,
+                    Broadcast.status == "scheduled",
                     Broadcast.scheduled_time <= now
                 )
             ).all()
@@ -61,16 +61,26 @@ class BroadcastService:
             for broadcast in broadcasts:
                 self.logger.info("📢 Отправка запланированной рассылки: %s", broadcast.title)
                 
-                success, failed = await self.send_broadcast(
-                    broadcast.message_text, 
-                    broadcast.photo_url
-                )
-                
-                broadcast.status = BroadcastStatus.SENT.value
-                broadcast.sent_at = datetime.utcnow()
-                db.commit()
-                
-                self.logger.info("✅ Рассылка отправлена: %d успешно, %d неудачно", success, failed)
+                # Получаем репозиторий лидов
+                lead_repo = get_lead_repository()
+                try:
+                    # Получаем всех пользователей
+                    leads = lead_repo.db.query(Lead).all()
+                    users = set(lead.user_id for lead in leads)
+                    
+                    success, failed = await self.send_broadcast_to_users(
+                        users, 
+                        broadcast.message_text, 
+                        broadcast.photo_url
+                    )
+                    
+                    broadcast.status = "sent"
+                    broadcast.sent_at = datetime.utcnow()
+                    db.commit()
+                    
+                    self.logger.info("✅ Рассылка отправлена: %d успешно, %d неудачно", success, failed)
+                finally:
+                    lead_repo.db.close()
                 
         except Exception as e:
             self.logger.error("❌ Ошибка при проверке рассылок: %s", e)
@@ -78,11 +88,8 @@ class BroadcastService:
         finally:
             db.close()
 
-    async def send_broadcast(self, text: str, photo: str = None) -> tuple[int, int]:
-        """Отправка рассылки всем пользователям из базы"""
-        lead_repo = get_lead_repository()
-        users = set(lead.user_id for lead in lead_repo.db.query(Lead).all())
-        
+    async def send_broadcast_to_users(self, users: set, text: str, photo: str = None) -> tuple[int, int]:
+        """Отправка рассылки конкретным пользователям"""
         success = 0
         failed = 0
         

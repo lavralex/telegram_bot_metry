@@ -1,10 +1,10 @@
 import asyncio
-from aiogram import Bot, Dispatcher, BaseMiddleware
-from aiogram.types import Update
+from aiogram import Bot, Dispatcher
 import logging
 
 from app.core.config import config
 from app.core.logging_config import setup_logging
+from app.core.database import check_and_create_tables
 from app.handlers.start import start_router
 from app.handlers.investment import investment_router
 from app.handlers.living import living_router
@@ -15,31 +15,11 @@ from app.handlers.contact import contact_router
 from app.handlers.budget import budget_router
 from app.handlers.timeline import timeline_router
 from app.handlers.admin import admin_router
+from app.handlers.admin_chat import admin_chat_router
+from app.middlewares.user_message_middleware import UserMessageMiddleware
 from app.application.services.broadcast_service import start_broadcast_scheduler, stop_broadcast_scheduler
 from app.infrastructure.external.bitrix24 import init_bitrix_client
-
-class LoggingMiddleware(BaseMiddleware):
-    async def __call__(self, handler, event: Update, data):
-        logger = logging.getLogger('bot.updates')
-        
-        if event.callback_query:
-            logger.debug(
-                f"CALLBACK: {event.callback_query.data} | "
-                f"User: {event.callback_query.from_user.id}"
-            )
-        elif event.message:
-            if event.message.contact:
-                # Безопасное логирование контакта - только факт получения
-                logger.info(
-                    f"CONTACT: User {event.message.from_user.id} shared contact"
-                )
-            elif event.message.text:
-                # Логируем только короткий префикс текста
-                text_preview = event.message.text[:30] + "..." if len(event.message.text) > 30 else event.message.text
-                logger.debug(f"MESSAGE: {text_preview} | User: {event.message.from_user.id}")
-        
-        result = await handler(event, data)
-        return result
+from app.handlers.utm_handler import utm_router
 
 async def shutdown():
     """Корректное завершение работы"""
@@ -52,13 +32,24 @@ async def main():
     logger = setup_logging()
     logger.info("🚀 Запуск бота...")
     
+    # Проверяем и создаем таблицы при запуске
+    if config.AUTO_MIGRATE:
+        logger.info("🔄 Проверка и создание таблиц...")
+        check_and_create_tables()
+    else:
+        logger.info("ℹ️ Автоматическая миграция отключена")
+    
     bot = Bot(token=config.BOT_TOKEN)
     dp = Dispatcher()
     
-    # Добавляем middleware для логирования
-    dp.update.middleware(LoggingMiddleware())
+    # Добавляем middleware для перехвата сообщений пользователей
+    if config.ENABLE_ADMIN_CHAT:
+        # Правильная регистрация middleware для всех типов событий
+        dp.update.middleware(UserMessageMiddleware())
+        logger.info("✅ Middleware для переписки включен")
     
     routers = [
+        utm_router,
         start_router,
         back_router,
         budget_router,
@@ -68,7 +59,8 @@ async def main():
         manager_router,
         analytics_router,
         contact_router,
-        admin_router
+        admin_router,
+        admin_chat_router
     ]
     
     for router in routers:
@@ -91,11 +83,20 @@ async def main():
     await start_broadcast_scheduler(bot)
     logger.info("📢 Планировщик рассылок запущен")
     
+    # Логируем информацию о переписке
+    if config.ENABLE_ADMIN_CHAT:
+        logger.info("💬 Функционал переписки админа с пользователями ВКЛЮЧЕН")
+        logger.info("👥 Админы: %s", config.ADMIN_IDS)
+    else:
+        logger.info("🔇 Функционал переписки админа с пользователями ВЫКЛЮЧЕН")
+    
     try:
         logger.info("🔄 Бот начал polling...")
         await dp.start_polling(bot)
     except KeyboardInterrupt:
         logger.info("🛑 Получен сигнал KeyboardInterrupt")
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка: {e}", exc_info=True)
     finally:
         # Останавливаем планировщик при завершении
         await shutdown()
@@ -105,5 +106,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n👋 Бот завершил работу")
-    except Exception as e:
-        logging.getLogger('bot.main').error(f"❌ Критическая ошибка: {e}", exc_info=True)

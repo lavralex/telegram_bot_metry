@@ -1,8 +1,9 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, JSON, BigInteger
+from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, JSON, BigInteger, ForeignKey
 from app.core.database import Base
 from datetime import datetime
 import enum
 
+# Enum для обратной совместимости
 class LeadStatus(str, enum.Enum):
     NEW = "new"
     CONTACTED = "contacted"
@@ -14,6 +15,16 @@ class BroadcastStatus(str, enum.Enum):
     SCHEDULED = "scheduled"
     SENT = "sent"
     CANCELLED = "cancelled"
+
+class MessageDirection(str, enum.Enum):
+    USER_TO_ADMIN = "user_to_admin"
+    ADMIN_TO_USER = "admin_to_user"
+
+class MessageStatus(str, enum.Enum):
+    SENT = "sent"
+    DELIVERED = "delivered"
+    READ = "read"
+    FAILED = "failed"
 
 class Lead(Base):
     __tablename__ = "leads"
@@ -31,7 +42,7 @@ class Lead(Base):
     management = Column(String(50))
     experience = Column(String(50))
     user_path = Column(JSON)
-    status = Column(String(20), default=LeadStatus.NEW)
+    status = Column(String(20), default=LeadStatus.NEW.value)  # Используем значение enum
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -53,7 +64,7 @@ class Broadcast(Base):
     message_text = Column(Text)
     photo_url = Column(String(500))
     scheduled_time = Column(DateTime, nullable=False)
-    status = Column(String(20), default=BroadcastStatus.DRAFT)
+    status = Column(String(20), default=BroadcastStatus.DRAFT.value)  # Используем значение enum
     sent_at = Column(DateTime)
     created_by = Column(BigInteger, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -71,3 +82,27 @@ class Subscriber(Base):
     is_active = Column(Boolean, default=True)
     subscribed_at = Column(DateTime, default=datetime.utcnow)
     unsubscribed_at = Column(DateTime)
+
+class UserMessage(Base):
+    __tablename__ = "user_messages"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(BigInteger, nullable=False, index=True)
+    admin_id = Column(BigInteger, nullable=True)  # ID админа, если ответил
+    
+    # Основные поля сообщения
+    message_text = Column(Text)
+    photo_url = Column(String(500), nullable=True)
+    document_url = Column(String(500), nullable=True)
+    
+    # Метаданные - используем значения enum
+    direction = Column(String(20), nullable=False)  # 'user_to_admin' или 'admin_to_user'
+    status = Column(String(20), default=MessageStatus.SENT.value)  # 'sent', 'delivered', 'read', 'failed'
+    
+    # Внешние ключи для связи с лидами и UTM
+    lead_id = Column(Integer, ForeignKey('leads.id'), nullable=True)
+    utm_source = Column(String(100), nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    delivered_at = Column(DateTime, nullable=True)
+    read_at = Column(DateTime, nullable=True)
