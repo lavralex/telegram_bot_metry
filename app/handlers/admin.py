@@ -25,17 +25,13 @@ BROADCAST_STATUS_EMOJI = {
     'cancelled': "❌"
 }
 
-# Фильтр для проверки админа
 def is_admin(user_id: int) -> bool:
     return user_id in config.ADMIN_IDS
 
-# Состояния для создания рассылки
 class BroadcastStates(StatesGroup):
     waiting_for_text = State()
     waiting_for_photo = State()
     waiting_for_time = State()
-
-# Команда для получения ID пользователя
 
 @admin_router.message(Command("check_broadcasts"))
 async def admin_check_broadcasts(message: Message):
@@ -65,7 +61,6 @@ async def get_my_id(message: Message):
         f"💡 *Скопируйте ID и добавьте в файл .env*"
     )
 
-# Статистика
 @admin_router.message(Command("stats"))
 async def admin_stats(message: Message):
     if not is_admin(message.from_user.id):
@@ -76,18 +71,11 @@ async def admin_stats(message: Message):
     click_repo = get_link_click_repository()
     
     try:
-        # Общая статистика
         today_leads = lead_repo.get_today_leads()
         total_leads = len(today_leads)
         total_clicks = click_repo.get_clicks_count()
-        
-        # Статистика по сегментам
         leads_by_segment = lead_repo.get_leads_count_by_segment()
-        
-        # Популярные UTM
         popular_utm = click_repo.get_popular_utm_sources(5)
-        
-        # Конверсия (упрощенная)
         conversion = (total_leads / total_clicks * 100) if total_clicks > 0 else 0
         
         stats_text = (
@@ -111,7 +99,6 @@ async def admin_stats(message: Message):
         lead_repo.db.close()
         click_repo.db.close()
 
-# Детальная статистика по UTM
 @admin_router.message(Command("utm_stats"))
 async def admin_utm_stats(message: Message, command: CommandObject):
     if not is_admin(message.from_user.id):
@@ -141,7 +128,7 @@ async def admin_utm_stats(message: Message, command: CommandObject):
         
         if leads:
             stats_text += "**Последние лиды:**\n"
-            for lead in leads[:5]:  # Последние 5 лидов
+            for lead in leads[:5]:
                 stats_text += f"  • {lead.first_name} {lead.last_name} - {lead.phone} ({lead.created_at.strftime('%H:%M')})\n"
         
         await message.answer(stats_text)
@@ -149,7 +136,6 @@ async def admin_utm_stats(message: Message, command: CommandObject):
         lead_repo.db.close()
         click_repo.db.close()
 
-# Просмотр лидов
 @admin_router.message(Command("leads"))
 async def admin_leads(message: Message, command: CommandObject):
     if not is_admin(message.from_user.id):
@@ -159,7 +145,6 @@ async def admin_leads(message: Message, command: CommandObject):
     lead_repo = get_lead_repository()
     
     try:
-        # Проверяем есть ли аргумент для фильтрации по сегменту
         args = command.args
         if args:
             today_leads = lead_repo.get_leads_by_segment(args)
@@ -174,7 +159,7 @@ async def admin_leads(message: Message, command: CommandObject):
         segment_text = f" ({args})" if args else ""
         leads_text = f"🎯 **ПОСЛЕДНИЕ ЛИДЫ{segment_text}**\n\n"
         
-        for lead in today_leads[:10]:  # Последние 10 лидов
+        for lead in today_leads[:10]:
             phone_display = lead.phone if lead.phone else "❌ не указан"
             budget_display = lead.budget if lead.budget else "не указан"
             
@@ -191,7 +176,6 @@ async def admin_leads(message: Message, command: CommandObject):
     finally:
         lead_repo.db.close()
 
-# Генератор UTM ссылок
 @admin_router.message(Command("links"))
 async def admin_links(message: Message):
     if not is_admin(message.from_user.id):
@@ -205,8 +189,6 @@ async def admin_links(message: Message):
     
     try:
         links_text = "🔗 **UTM ССЫЛКИ ДЛЯ РЕКЛАМЫ**\n\n"
-        
-        # === ИСПОЛЬЗУЕМ английские UTM ключи для ссылок ===
         for utm_key, utm_name in config.UTM_SEGMENTS.items():
             clicks = click_repo.get_clicks_count(utm_key)
             leads_count = lead_repo.db.query(Lead).filter(Lead.utm_source == utm_key).count()
@@ -227,7 +209,6 @@ async def admin_links(message: Message):
         click_repo.db.close()
         lead_repo.db.close()
 
-# Экспорт данных
 @admin_router.message(Command("export"))
 async def admin_export(message: Message, command: CommandObject):
     if not is_admin(message.from_user.id):
@@ -237,17 +218,15 @@ async def admin_export(message: Message, command: CommandObject):
     lead_repo = get_lead_repository()
     
     try:
-        # Проверяем аргументы для фильтрации
         args = command.args
         if args and args in ['today', 'all']:
             if args == 'today':
                 all_leads = lead_repo.get_today_leads()
                 filename_suffix = "today"
-            else:  # 'all'
+            else:
                 all_leads = lead_repo.db.query(Lead).all()
                 filename_suffix = "all"
         else:
-            # По умолчанию - все лиды
             all_leads = lead_repo.db.query(Lead).all()
             filename_suffix = "all"
         
@@ -255,7 +234,6 @@ async def admin_export(message: Message, command: CommandObject):
             await message.answer("📭 Нет данных для экспорта")
             return
         
-        # Создаем DataFrame
         data = []
         for lead in all_leads:
             data.append({
@@ -275,16 +253,12 @@ async def admin_export(message: Message, command: CommandObject):
             })
         
         df = pd.DataFrame(data)
-        
-        # Создаем Excel файл в памяти
         output = BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, sheet_name='Лиды', index=False)
         
         output.seek(0)
         excel_data = output.getvalue()
-        
-        # Используем BufferedInputFile для отправки
         filename = f"leads_export_{filename_suffix}_{datetime.now().strftime('%Y-%m-%d')}.xlsx"
         
         await message.answer_document(
@@ -294,7 +268,6 @@ async def admin_export(message: Message, command: CommandObject):
     finally:
         lead_repo.db.close()
 
-# Создание рассылки
 @admin_router.message(Command("broadcast"))
 async def admin_broadcast(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -309,7 +282,6 @@ async def admin_broadcast(message: Message, state: FSMContext):
 
 @admin_router.message(BroadcastStates.waiting_for_text)
 async def process_broadcast_text(message: Message, state: FSMContext):
-    # Проверяем что message.text не None
     if not message.text:
         await message.answer("❌ Пожалуйста, отправьте текстовое сообщение:")
         return
@@ -361,7 +333,6 @@ async def process_broadcast_skip_photo(message: Message, state: FSMContext):
 
 @admin_router.message(BroadcastStates.waiting_for_time)
 async def process_broadcast_time(message: Message, state: FSMContext):
-    # Проверяем что message.text не None
     if not message.text:
         await message.answer("❌ Пожалуйста, укажите время:")
         return
@@ -371,16 +342,12 @@ async def process_broadcast_time(message: Message, state: FSMContext):
     
     try:
         send_time = parse_time_input(time_input)
-        
-        # Показываем пользователю время по Москве
         moscow_time = send_time + timedelta(hours=3)
         
         if send_time <= datetime.utcnow():
-            # Отправляем сразу
             success, failed = await send_broadcast(message.bot, data['text'], data.get('photo'))
             status = f"✅ Отправлено сразу\nУспешно: {success}, Не удалось: {failed}"
         else:
-            # Сохраняем в базу для отложенной отправки
             db = SessionLocal()
             broadcast = Broadcast(
                 title=f"Рассылка от {datetime.now().strftime('%d.%m.%Y %H:%M')}",
@@ -416,12 +383,10 @@ async def process_broadcast_time(message: Message, state: FSMContext):
 def parse_time_input(time_input: str) -> datetime:
     """Парсит ввод времени пользователя с поправкой на +3 часа (Москва -> UTC)"""
     now_utc = datetime.utcnow()
-    now_moscow = now_utc + timedelta(hours=3)  # Текущее время по Москве
+    now_moscow = now_utc + timedelta(hours=3)
     
     if time_input == 'now':
         return now_utc
-    
-    # Относительное время: +2 hours, +30 minutes
     relative_match = re.match(r'\+(\d+)\s*(hour|hours|minute|minutes|hr|min)', time_input)
     if relative_match:
         amount = int(relative_match.group(1))
@@ -431,45 +396,36 @@ def parse_time_input(time_input: str) -> datetime:
             return now_utc + timedelta(hours=amount)
         elif unit in ['minute', 'minutes', 'min']:
             return now_utc + timedelta(minutes=amount)
-    
-    # Завтра в указанное время: tomorrow 10:00
+
     if time_input.startswith('tomorrow'):
         time_part = time_input.replace('tomorrow', '').strip()
         if not time_part:
             time_part = '10:00'
         time_obj = datetime.strptime(time_part, '%H:%M').time()
-        # Создаем datetime на завтра в указанное время по Москве
         result_moscow = datetime.combine(now_moscow.date() + timedelta(days=1), time_obj)
-        # Конвертируем в UTC (вычитаем 3 часа)
         result_utc = result_moscow - timedelta(hours=3)
         return result_utc
-    
-    # Попробуем разные форматы дат
+
     formats = [
-        '%d.%m.%Y %H:%M',    # 01.12.2024 14:30
-        '%Y-%m-%d %H:%M',    # 2024-12-01 14:30
-        '%H:%M',             # 14:30 (сегодня)
-        '%d.%m %H:%M',       # 01.12 14:30 (текущий год)
+        '%d.%m.%Y %H:%M',
+        '%Y-%m-%d %H:%M',
+        '%H:%M',
+        '%d.%m %H:%M',
     ]
     
     for fmt in formats:
         try:
             if fmt == '%H:%M':
-                # Для времени без даты - парсим как московское время сегодня
                 time_obj = datetime.strptime(time_input, fmt).time()
                 result_moscow = datetime.combine(now_moscow.date(), time_obj)
                 
-                # Если время уже прошло сегодня по Москве, планируем на завтра
                 if result_moscow < now_moscow:
                     result_moscow += timedelta(days=1)
                 
-                # Конвертируем в UTC (вычитаем 3 часа)
                 result_utc = result_moscow - timedelta(hours=3)
                 return result_utc
             else:
-                # Для дат с временем - парсим как московское время и конвертируем в UTC
                 naive_dt = datetime.strptime(time_input, fmt)
-                # Предполагаем, что пользователь вводит московское время
                 result_utc = naive_dt - timedelta(hours=3)
                 return result_utc
         except ValueError:
@@ -493,7 +449,7 @@ async def send_broadcast(bot, text: str, photo: str = None) -> tuple[int, int]:
                 else:
                     await bot.send_message(user_id, text)
                 success += 1
-                await asyncio.sleep(0.05)  # Чтобы не превысить лимиты Telegram (30 сообщений/секунду)
+                await asyncio.sleep(0.05)
             except Exception as e:
                 print(f"❌ Ошибка отправки пользователю {user_id}: {e}")
                 failed += 1
@@ -502,7 +458,6 @@ async def send_broadcast(bot, text: str, photo: str = None) -> tuple[int, int]:
     finally:
         lead_repo.db.close()
 
-# Просмотр запланированных рассылок
 @admin_router.message(Command("broadcasts"))
 async def admin_broadcasts(message: Message):
     if not is_admin(message.from_user.id):
@@ -521,8 +476,7 @@ async def admin_broadcasts(message: Message):
         
         for broadcast in broadcasts:
             status_emoji = BROADCAST_STATUS_EMOJI.get(broadcast.status, "❓")
-            
-            # Показываем время по Москве (добавляем 3 часа)
+
             moscow_time = broadcast.scheduled_time + timedelta(hours=3)
             
             broadcasts_text += (
@@ -537,14 +491,12 @@ async def admin_broadcasts(message: Message):
     finally:
         db.close()
 
-# Быстрая рассылка (без состояний)
 @admin_router.message(Command("quick_send"))
 async def admin_quick_send(message: Message, command: CommandObject):
     if not is_admin(message.from_user.id):
         await message.answer("❌ Доступ запрещен")
         return
 
-    # Проверяем что есть аргументы
     if not command.args:
         await message.answer(
             "❌ Укажите текст для рассылки:\n"
@@ -556,8 +508,7 @@ async def admin_quick_send(message: Message, command: CommandObject):
     if len(text) > 4000:
         await message.answer("❌ Текст слишком длинный (максимум 4000 символов)")
         return
-    
-    # Сразу отправляем
+
     success, failed = await send_broadcast(message.bot, text)
     
     await message.answer(
@@ -567,7 +518,6 @@ async def admin_quick_send(message: Message, command: CommandObject):
         f"📝 Текст: {text[:100]}..."
     )
 
-# Помощь по админ-командам
 @admin_router.message(Command("admin_help"))
 async def admin_help(message: Message):
     if not is_admin(message.from_user.id):

@@ -31,8 +31,7 @@ async def shutdown():
 async def main():
     logger = setup_logging()
     logger.info("🚀 Запуск бота...")
-    
-    # Проверяем и создаем таблицы при запуске
+
     if config.AUTO_MIGRATE:
         logger.info("🔄 Проверка и создание таблиц...")
         check_and_create_tables()
@@ -42,9 +41,7 @@ async def main():
     bot = Bot(token=config.BOT_TOKEN)
     dp = Dispatcher()
     
-    # Добавляем middleware для перехвата сообщений пользователей
     if config.ENABLE_ADMIN_CHAT:
-        # Правильная регистрация middleware для всех типов событий
         dp.update.middleware(UserMessageMiddleware())
         logger.info("✅ Middleware для переписки включен")
     
@@ -66,7 +63,6 @@ async def main():
     for router in routers:
         dp.include_router(router)
     
-    # Инициализация Bitrix24 клиента
     if config.BITRIX24_ENABLED and config.BITRIX24_WEBHOOK_URL:
         await init_bitrix_client(config.BITRIX24_WEBHOOK_URL)
         logger.info(f"✅ Bitrix24 интеграция включена")
@@ -79,11 +75,9 @@ async def main():
     bot_username = (await bot.get_me()).username
     logger.info("🔗 Пример UTM ссылки: https://t.me/%s?start=utm_invest", bot_username)
     
-    # Запускаем планировщик рассылок
     await start_broadcast_scheduler(bot)
     logger.info("📢 Планировщик рассылок запущен")
     
-    # Логируем информацию о переписке
     if config.ENABLE_ADMIN_CHAT:
         logger.info("💬 Функционал переписки админа с пользователями ВКЛЮЧЕН")
         logger.info("👥 Админы: %s", config.ADMIN_IDS)
@@ -98,7 +92,6 @@ async def main():
     except Exception as e:
         logger.error(f"❌ Критическая ошибка: {e}", exc_info=True)
     finally:
-        # Останавливаем планировщик при завершении
         await shutdown()
 
 if __name__ == "__main__":

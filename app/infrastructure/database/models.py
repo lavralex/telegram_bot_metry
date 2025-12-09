@@ -3,7 +3,6 @@ from app.core.database import Base
 from datetime import datetime
 import enum
 
-# Enum для обратной совместимости
 class LeadStatus(str, enum.Enum):
     NEW = "new"
     CONTACTED = "contacted"
@@ -42,7 +41,7 @@ class Lead(Base):
     management = Column(String(50))
     experience = Column(String(50))
     user_path = Column(JSON)
-    status = Column(String(20), default=LeadStatus.NEW.value)  # Используем значение enum
+    status = Column(String(20), default=LeadStatus.NEW.value)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -64,7 +63,7 @@ class Broadcast(Base):
     message_text = Column(Text)
     photo_url = Column(String(500))
     scheduled_time = Column(DateTime, nullable=False)
-    status = Column(String(20), default=BroadcastStatus.DRAFT.value)  # Используем значение enum
+    status = Column(String(20), default=BroadcastStatus.DRAFT.value)
     sent_at = Column(DateTime)
     created_by = Column(BigInteger, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -88,18 +87,13 @@ class UserMessage(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(BigInteger, nullable=False, index=True)
-    admin_id = Column(BigInteger, nullable=True)  # ID админа, если ответил
-    
-    # Основные поля сообщения
+    admin_id = Column(BigInteger, nullable=True)
+
     message_text = Column(Text)
     photo_url = Column(String(500), nullable=True)
     document_url = Column(String(500), nullable=True)
-    
-    # Метаданные - используем значения enum
-    direction = Column(String(20), nullable=False)  # 'user_to_admin' или 'admin_to_user'
-    status = Column(String(20), default=MessageStatus.SENT.value)  # 'sent', 'delivered', 'read', 'failed'
-    
-    # Внешние ключи для связи с лидами и UTM
+    direction = Column(String(20), nullable=False)
+    status = Column(String(20), default=MessageStatus.SENT.value)
     lead_id = Column(Integer, ForeignKey('leads.id'), nullable=True)
     utm_source = Column(String(100), nullable=True)
     

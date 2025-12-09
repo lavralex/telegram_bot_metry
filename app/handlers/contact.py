@@ -15,7 +15,6 @@ contact_router = Router()
 
 async def share_contact(message_or_callback, state: FSMContext):
     """Универсальная функция для запроса контакта"""
-    # Создаем Reply-клавиатуру
     reply_keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📞 Поделиться контактом", request_contact=True)]
@@ -23,10 +22,8 @@ async def share_contact(message_or_callback, state: FSMContext):
         resize_keyboard=True,
         one_time_keyboard=True
     )
-    
-    # Отправляем одно сообщение только с Reply-клавиатурой
+
     if isinstance(message_or_callback, CallbackQuery):
-        # === СООБЩЕНИЕ С REPLY-КЛАВИАТУРОЙ: answer (новое сообщение) ===
         await message_or_callback.message.answer(
             "Пожалуйста, авторизуйтесь, нажав кнопку внизу экрана.\n"
             "Ваши данные полностью защищены — обещаем, никаких навязчивых звонков",
@@ -50,15 +47,12 @@ async def share_contact_handler(callback: CallbackQuery, state: FSMContext):
 async def process_contact_all(message: Message, state: FSMContext):
     if not message.contact:
         return
-    
-    # Сохраняем телефон в состоянии
+
     phone = message.contact.phone_number
     await state.update_data(phone=phone)
-    
-    # Получаем все данные из состояния
+
     user_data = await state.get_data()
-    
-    # Сохраняем лид в базу данных
+
     lead_repo = get_lead_repository()
     lead_service = LeadService(lead_repo)
     
@@ -70,21 +64,15 @@ async def process_contact_all(message: Message, state: FSMContext):
     }
     
     try:
-        lead = lead_service.create_lead_from_state(user_info, user_data)
+        lead, bitrix_data = lead_service.create_lead_from_state(user_info, user_data)
         logger.info(f"✅ Лид сохранен в БД с ID: {lead.id}")
     except Exception as e:
         logger.error(f"❌ Ошибка сохранения лида: {e}")
         await message.answer("Произошла ошибка при сохранении данных. Попробуйте позже.")
         return
-    
-    # Отправка в Bitrix24
+
     if config.BITRIX24_ENABLED:
         try:
-            bitrix_data = {
-                **user_info,
-                **user_data
-            }
-            
             bitrix_result = await create_bitrix_lead(bitrix_data)
             if bitrix_result['success']:
                 logger.info(f"✅ Лид успешно создан в Bitrix24, ID: {bitrix_result['lead_id']}")
@@ -92,19 +80,14 @@ async def process_contact_all(message: Message, state: FSMContext):
                 logger.warning(f"⚠️ Ошибка создания лида в Bitrix24: {bitrix_result['error']}")
         except Exception as e:
             logger.error(f"⚠️ Ошибка при отправке в Bitrix24: {e}")
-    
-    # Выводим информацию о лиде
+
     await print_lead_info(user_info, user_data, lead.id)
-    
-    # === УБИРАЕМ КЛАВИАТУРУ БЕЗ СООБЩЕНИЯ ===
-    # Просто редактируем предыдущее сообщение чтобы убрать клавиатуру
+
     try:
         await message.edit_reply_markup(reply_markup=None)
     except:
-        # Если не получилось отредактировать, просто игнорируем
         pass
-    
-    # Отправляем финальные сообщения в зависимости от сегмента
+
     segment = user_data.get('segment', 'unknown')
     await send_final_messages(message, segment, user_data)
     
@@ -120,8 +103,7 @@ async def print_lead_info(user_info: dict, user_data: dict, lead_id: int):
     utm_source = user_data.get('utm_source', 'organic')
     user_path = user_data.get('user_path', [])
     phone = user_data.get('phone', 'не указан')
-    
-    # Определяем источник трафика
+
     traffic_source = "органический"
     if utm_source != "organic":
         for utm_key, utm_name in config.UTM_SEGMENTS.items():
@@ -130,11 +112,9 @@ async def print_lead_info(user_info: dict, user_data: dict, lead_id: int):
                 break
         else:
             traffic_source = f"UTM ({utm_source})"
-    
-    # Формируем комментарий с путем пользователя
+
     user_journey = " → ".join(user_path)
-    
-    # Логируем данные лида
+
     logger.info(f"""
 НОВЫЙ ЛИД СОХРАНЕН В БАЗУ!
 📋 ID лида: {lead_id}
@@ -148,7 +128,6 @@ async def print_lead_info(user_info: dict, user_data: dict, lead_id: int):
 async def send_final_messages(message: Message, segment: str, user_data: dict):
     """Отправляет финальные сообщения в зависимости от сегмента"""
     if segment == "analytics":
-        # === PDF ФАЙЛ: answer (новое сообщение) ===
         try:
             pdf_file = FSInputFile(config.analytics_pdf_path)
             await message.answer_document(
@@ -162,8 +141,7 @@ async def send_final_messages(message: Message, segment: str, user_data: dict):
                 "К сожалению, файл аналитики временно недоступен.\n"
                 "Наш менеджер свяжется с вами и отправит актуальные данные."
             )
-        
-        # === СООБЩЕНИЕ С КАРТИНКОЙ ПОДПИСКИ ===
+
         await send_subscribe_message(message)
         
     elif segment == "manager":
@@ -172,14 +150,12 @@ async def send_final_messages(message: Message, segment: str, user_data: dict):
             await message.answer("Отлично! Персональный менеджер скоро свяжется с Вами!")
         else:
             await message.answer("Благодарим! Ваш персональный менеджер скоро свяжется с вами.")
-            
-            # === СООБЩЕНИЕ С КАРТИНКОЙ ПОДПИСКИ ===
+
             await send_subscribe_message(message)
             
-    else:  # investment и living
+    else:
         await message.answer("Благодарим! Ваш персональный менеджер скоро свяжется с вами.")
-        
-        # === СООБЩЕНИЕ С КАРТИНКОЙ ПОДПИСКИ ===
+
         await send_subscribe_message(message)
 
 async def send_subscribe_message(message: Message):

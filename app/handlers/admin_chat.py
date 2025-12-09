@@ -14,15 +14,12 @@ logger = logging.getLogger('bot.admin_chat')
 
 admin_chat_router = Router()
 
-# Состояния для ответа пользователю
 class ReplyStates(StatesGroup):
     waiting_for_reply_text = State()
     waiting_for_reply_media = State()
 
-# Словарь для отслеживания переписки: user_id -> admin_id
 active_replies = {}
 
-# Команда для включения/выключения переписки
 @admin_chat_router.message(Command("toggle_chat"))
 async def toggle_chat(message: Message):
     if not is_admin(message.from_user.id):
@@ -32,7 +29,6 @@ async def toggle_chat(message: Message):
     status = "✅ ВКЛЮЧЕНА" if config.ENABLE_ADMIN_CHAT else "❌ ВЫКЛЮЧЕНА"
     await message.answer(f"📢 Переписка с пользователями: {status}")
 
-# Обработчик кнопки "Ответить"
 @admin_chat_router.callback_query(F.data.startswith("reply_to_"))
 async def start_reply(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
@@ -41,11 +37,8 @@ async def start_reply(callback: CallbackQuery, state: FSMContext):
     
     user_id = int(callback.data.replace("reply_to_", ""))
     admin_id = callback.from_user.id
-    
-    # Сохраняем в активные ответы
     active_replies[admin_id] = user_id
-    
-    # Сохраняем информацию о переписке в состоянии
+
     await state.update_data(
         reply_user_id=user_id,
         original_callback=callback
@@ -60,7 +53,6 @@ async def start_reply(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ReplyStates.waiting_for_reply_text)
     await callback.answer()
 
-# Обработчик сообщения с ответом
 @admin_chat_router.message(ReplyStates.waiting_for_reply_text)
 async def process_reply_text(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -73,8 +65,7 @@ async def process_reply_text(message: Message, state: FSMContext):
         await message.answer("❌ Ошибка: пользователь не найден")
         await state.clear()
         return
-    
-    # Сохраняем ответ в БД
+
     message_repo = get_message_repository()
     
     message_data = {
@@ -84,18 +75,14 @@ async def process_reply_text(message: Message, state: FSMContext):
         'direction': 'admin_to_user',
         'utm_source': 'admin_reply'
     }
-    
-    # Сохраняем медиа если есть
+
     if message.photo:
         message_data['photo_url'] = message.photo[-1].file_id
     elif message.document:
         message_data['document_url'] = message.document.file_id
     
     try:
-        # Сохраняем сообщение
         db_message = message_repo.create_message(message_data)
-        
-        # Отправляем пользователю
         success = await send_message_to_user(
             message.bot, 
             user_id, 
@@ -111,8 +98,7 @@ async def process_reply_text(message: Message, state: FSMContext):
             await message.answer("❌ Не удалось отправить ответ. Пользователь, возможно, заблокировал бота.")
             db_message.status = 'failed'
             message_repo.db.commit()
-        
-        # Удаляем из активных ответов
+
         admin_id = message.from_user.id
         if admin_id in active_replies:
             del active_replies[admin_id]
@@ -123,7 +109,6 @@ async def process_reply_text(message: Message, state: FSMContext):
     
     await state.clear()
 
-# Команда отмены
 @admin_chat_router.message(Command("cancel"))
 async def cancel_reply(message: Message, state: FSMContext):
     if await state.get_state() == ReplyStates.waiting_for_reply_text:
@@ -134,7 +119,6 @@ async def cancel_reply(message: Message, state: FSMContext):
         await message.answer("❌ Ответ отменен")
         await state.clear()
 
-# Обработчик просмотра профиля пользователя
 @admin_chat_router.callback_query(F.data.startswith("profile_"))
 async def view_user_profile(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -147,11 +131,8 @@ async def view_user_profile(callback: CallbackQuery):
     lead_repo = get_lead_repository()
     
     try:
-        # Получаем информацию о пользователе
         user_info = message_repo.get_user_info_for_message(user_id)
         lead = user_info['lead']
-        
-        # Формируем профиль
         profile_text = "👤 ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ\n\n"
         profile_text += f"🆔 ID: {user_id}\n"
         
@@ -160,20 +141,17 @@ async def view_user_profile(callback: CallbackQuery):
             profile_text += f"🔗 Username: @{lead.username}\n" if lead.username else ""
             profile_text += f"📞 Телефон: {lead.phone or 'не указан'}\n"
             profile_text += f"🏷️ Сегмент: {lead.segment}\n"
-            profile_text += f"🔖 UTM: {lead.utm_source or 'organic'}\n"  # Показываем UTM из лида
+            profile_text += f"🔖 UTM: {lead.utm_source or 'organic'}\n"
             profile_text += f"💰 Бюджет: {lead.budget or 'не указан'}\n"
             profile_text += f"⏰ Создан: {lead.created_at.strftime('%d.%m.%Y %H:%M')}\n"
         else:
             profile_text += "⚠️ Пользователь не оставлял заявку\n"
-        
-        # Получаем последнее сообщение для определения текущего UTM
         last_message = message_repo.get_user_messages(user_id, limit=1)
         if last_message:
             profile_text += f"\n📊 Последний UTM в сообщениях: {last_message[0].utm_source or 'неизвестен'}"
         else:
             profile_text += f"\n📊 Последний UTM: {user_info['last_utm'] or 'неизвестен'}"
-        
-        # Получаем историю сообщений
+
         messages = message_repo.get_user_messages(user_id, limit=5)
         if messages:
             profile_text += "\n\n📨 Последние сообщения:"
@@ -188,7 +166,6 @@ async def view_user_profile(callback: CallbackQuery):
         logger.error(f"❌ Ошибка получения профиля: {e}")
         await callback.message.answer(f"❌ Ошибка: {str(e)}")
     finally:
-        # Закрываем соединения с БД
         message_repo.db.close()
         lead_repo.db.close()
     
@@ -225,7 +202,6 @@ async def send_message_to_user(bot, user_id: int, text: str = None,
 def is_admin(user_id: int) -> bool:
     return user_id in config.ADMIN_IDS
 
-# Команда для просмотра непрочитанных сообщений
 @admin_chat_router.message(Command("unread"))
 async def show_unread_messages(message: Message):
     if not is_admin(message.from_user.id):
@@ -240,7 +216,7 @@ async def show_unread_messages(message: Message):
     
     await message.answer(f"📨 Непрочитанных сообщений: {len(unread_messages)}")
     
-    for msg in unread_messages[:10]:  # Показываем первые 10
+    for msg in unread_messages[:10]:
         user_info = message_repo.get_user_info_for_message(msg.user_id)
         lead = user_info['lead']
         
@@ -263,7 +239,6 @@ async def show_unread_messages(message: Message):
         
         await message.answer(preview, reply_markup=keyboard)
 
-# Отметка сообщения как прочитанного
 @admin_chat_router.callback_query(F.data.startswith("read_"))
 async def mark_as_read(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -275,6 +250,4 @@ async def mark_as_read(callback: CallbackQuery):
     
     message_repo.mark_as_read(message_id)
     await callback.answer("✅ Сообщение отмечено как прочитанное")
-    
-    # Удаляем кнопки
     await callback.message.edit_reply_markup(reply_markup=None)

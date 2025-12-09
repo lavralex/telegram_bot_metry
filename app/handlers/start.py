@@ -41,5 +41,3 @@ async def about_command(message: Message):
     )
     
     await message.answer(about_text)
-
-# Можно добавить другие общие команды

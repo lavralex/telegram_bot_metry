@@ -16,11 +16,9 @@ async def add_step_to_path(state: FSMContext, step: str):
 
 @budget_router.callback_query(F.data.startswith("budget_"))
 async def universal_budget_handler(callback: CallbackQuery, state: FSMContext):
-    # Получаем сегмент из состояния
     data = await state.get_data()
     segment = data.get('segment', 'unknown')
-    
-    # Обрабатываем бюджет
+
     budget = callback.data.replace("budget_", "")
     budget_text = {
         "6-10": "6-10 млн",
@@ -31,10 +29,8 @@ async def universal_budget_handler(callback: CallbackQuery, state: FSMContext):
     
     await state.update_data(budget=budget_text)
     await add_step_to_path(state, f"Бюджет: {budget_text}")
-    
-    # В зависимости от сегмента переходим к следующему шагу
+
     if segment == "investment":
-        # === edit_text (заменяем предыдущее сообщение) ===
         await callback.message.edit_text(
             "Когда планируете инвестировать?",
             reply_markup=get_timeline_keyboard("investment")
@@ -42,7 +38,6 @@ async def universal_budget_handler(callback: CallbackQuery, state: FSMContext):
         await state.set_state("investment:waiting_for_timeline")
         
     elif segment == "living":
-        # === edit_text (заменяем предыдущее сообщение) ===
         await callback.message.edit_text(
             "Когда планируете приобретать?",
             reply_markup=get_timeline_keyboard("living")
@@ -50,7 +45,6 @@ async def universal_budget_handler(callback: CallbackQuery, state: FSMContext):
         await state.set_state("living:waiting_for_timeline")
     
     else:
-        # fallback
         await callback.message.edit_text(
             "Когда планируете?",
             reply_markup=get_timeline_keyboard()

@@ -17,11 +17,8 @@ async def add_step_to_path(state: FSMContext, step: str):
 
 @manager_router.callback_query(F.data == "manager")
 async def manager_start(callback: CallbackQuery, state: FSMContext):
-    # Обновляем сегмент в состоянии
     await state.update_data(segment="manager")
     await add_step_to_path(state, "Связаться с менеджером")
-    
-    # === edit_text (заменяем предыдущее сообщение) ===
     await callback.message.edit_text(
         "Ранее уже работали с нами?",
         reply_markup=get_experience_keyboard()
@@ -40,16 +37,9 @@ async def experience_selected(callback: CallbackQuery, state: FSMContext):
     experience_text = "уже инвестировал(а)" if experience == "invested" else "новый клиент"
     await state.update_data(experience=experience_text)
     await add_step_to_path(state, f"Опыт: {experience_text}")
-    
-    # === ИСПРАВЛЕНИЕ: показываем политику для ЛЮБОГО выбора ===
-    # Для нового и старого клиента одинаково
-    
-    # === СООБЩЕНИЕ С ПОЛИТИКОЙ: edit_text (заменяем предыдущее сообщение) ===
     await callback.message.edit_text(
         "Продолжая диалог, Вы соглашаетесь с Политикой по обработке персональных данных",
         reply_markup=get_policy_keyboard()
     )
-    
-    # Сразу переходим к запросу контакта с Reply-клавиатурой
     await share_contact(callback, state)
     await callback.answer()

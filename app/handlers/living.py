@@ -16,11 +16,8 @@ async def add_step_to_path(state: FSMContext, step: str):
 
 @living_router.callback_query(F.data == "living")
 async def living_start(callback: CallbackQuery, state: FSMContext):
-    # Обновляем сегмент в состоянии
     await state.update_data(segment="living")
     await add_step_to_path(state, "Недвижимость для жизни")
-    
-    # === edit_text (заменяем предыдущее сообщение) ===
     await callback.message.edit_text(
         "Бюджет",
         reply_markup=get_budget_keyboard("living")

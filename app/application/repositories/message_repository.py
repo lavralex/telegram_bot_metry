@@ -49,10 +49,8 @@ class MessageRepository:
     
     def get_user_info_for_message(self, user_id: int) -> dict:
         """Получает информацию о пользователе для отображения админу"""
-        # Ищем лида пользователя
         lead = self.db.query(Lead).filter(Lead.user_id == user_id).order_by(desc(Lead.created_at)).first()
-        
-        # Ищем последние UTM метки из сообщений
+
         last_message = self.db.query(UserMessage).filter(
             UserMessage.user_id == user_id
         ).order_by(desc(UserMessage.created_at)).first()
@@ -63,7 +61,6 @@ class MessageRepository:
             'user_id': user_id
         }
 
-# Фабричная функция для зависимостей
 def get_message_repository():
     db = SessionLocal()
     try:

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Скрипт для управления миграциями базы данных
 """
@@ -56,7 +55,6 @@ def main():
     command = sys.argv[1]
     
     if command == "init":
-        # Инициализация миграций
         print("📁 Инициализация миграций Alembic...")
         if not os.path.exists("alembic"):
             subprocess.run([sys.executable, "-m", "alembic", "init", "alembic"])
@@ -92,11 +90,9 @@ def main():
         run_command(["alembic", "history"], "История миграций")
     
     elif command == "auto":
-        # Автоматически создаем и применяем миграцию
         print("🤖 АВТОМАТИЧЕСКАЯ МИГРАЦИЯ")
         print("=" * 30)
         
-        # Проверяем текущее состояние
         print("📊 Проверка текущего состояния...")
         result = subprocess.run(
             [sys.executable, "-m", "alembic", "current"],
@@ -109,9 +105,7 @@ def main():
         else:
             print("ℹ️ Миграции не инициализированы")
         
-        # Создаем автоматическую миграцию
         if run_command(["alembic", "revision", "--autogenerate", "-m", "Auto migration"], "Создание миграции"):
-            # Применяем миграцию
             run_command(["alembic", "upgrade", "head"], "Применение миграции")
     
     else:

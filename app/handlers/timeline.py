@@ -22,11 +22,8 @@ async def add_step_to_path(state: FSMContext, step: str):
 
 @timeline_router.callback_query(F.data.startswith("timeline_"))
 async def universal_timeline_handler(callback: CallbackQuery, state: FSMContext):
-    # Получаем сегмент из состояния
     data = await state.get_data()
     segment = data.get('segment', 'unknown')
-    
-    # Обрабатываем timeline
     timeline = callback.data.replace("timeline_", "")
     timeline_text = {
         "3months": "В течение 3-х месяцев",
@@ -36,10 +33,8 @@ async def universal_timeline_handler(callback: CallbackQuery, state: FSMContext)
     
     await state.update_data(timeline=timeline_text)
     await add_step_to_path(state, f"Срок: {timeline_text}")
-    
-    # В зависимости от сегмента переходим к следующему шагу
+
     if segment == "investment":
-        # === СООБЩЕНИЕ С КАРТИНКОЙ: answer (новое сообщение) ===
         try:
             management_img = FSInputFile(config.management_image_path)
             await callback.message.answer_photo(
@@ -56,18 +51,13 @@ async def universal_timeline_handler(callback: CallbackQuery, state: FSMContext)
         await state.set_state("investment:waiting_for_management")
         
     elif segment == "living":
-        # Переход к сбору контактов
-        # === СООБЩЕНИЕ С ПОЛИТИКОЙ: answer (новое сообщение) ===
         await callback.message.answer(
             "Продолжая диалог, Вы соглашаетесь с Политикой по обработке персональных данных",
             reply_markup=get_policy_keyboard()
         )
-        
-        # Сразу переходим к запросу контакта с Reply-клавиатурой
         await share_contact(callback, state)
     
     else:
-        # fallback
         await callback.message.edit_text(
             "Ошибка: неизвестный сегмент",
             reply_markup=None

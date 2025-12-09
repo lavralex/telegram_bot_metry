@@ -2,7 +2,6 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Загружаем правильный .env файл
 ENV = os.getenv('ENV', 'development')
 env_file = f'.env.{ENV}'
 if Path(env_file).exists():
@@ -11,19 +10,15 @@ else:
     load_dotenv()
 
 class Config:
-    # Основные настройки
     BOT_TOKEN = os.getenv("BOT_TOKEN")
     ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(','))) if os.getenv("ADMIN_IDS") else []
     ENV = ENV
     
-    # 👇 ОБНОВЛЯЕМ: PostgreSQL вместо SQLite
     DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://bot_user:secure_password@localhost:5432/telegram_bot")
     
-    # Bitrix24
     BITRIX24_WEBHOOK_URL = os.getenv("BITRIX24_WEBHOOK_URL", "")
     BITRIX24_ENABLED = os.getenv("BITRIX24_ENABLED", "false").lower() == "true"
     
-    # UTM сегменты
     UTM_SEGMENTS = {
         "utm_elit": "Элитная недвижимость",
         "utm_apart": "Апартаменты",
@@ -36,13 +31,10 @@ class Config:
         "utm_sublease": "Субаренда"
     }
     
-    # Переписка админа с пользователями
     ENABLE_ADMIN_CHAT = os.getenv("ENABLE_ADMIN_CHAT", "true").lower() == "true"
     
-    # Автоматические миграции
     AUTO_MIGRATE = os.getenv("AUTO_MIGRATE", "true").lower() == "true"
     
-    # Пути (для медиафайлов все равно нужны)
     @property
     def base_dir(self):
         return Path(__file__).parent.parent.parent
@@ -78,7 +70,6 @@ class Config:
         if missing:
             raise ValueError(f"Отсутствуют обязательные переменные: {', '.join(missing)}")
         
-        # Создаем необходимые директории для медиа и логов
         config_instance = cls()
         config_instance.media_path.mkdir(exist_ok=True)
         config_instance.logs_path.mkdir(exist_ok=True)

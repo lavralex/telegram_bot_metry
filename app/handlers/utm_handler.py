@@ -15,14 +15,11 @@ utm_router = Router()
 @utm_router.message(CommandStart())
 async def handle_start_with_utm(message: Message, state: FSMContext):
     """Обрабатывает /start с UTM параметрами"""
-    # Очищаем предыдущее состояние
     await state.clear()
-    
-    # Получаем аргументы команды /start (UTM параметры)
+
     args = message.text.split()[1:] if len(message.text.split()) > 1 else []
     utm_source = args[0] if args else "organic"
-    
-    # Записываем переход в статистику
+
     click_repo = get_link_click_repository()
     user_data = {
         "user_id": message.from_user.id,
@@ -31,28 +28,23 @@ async def handle_start_with_utm(message: Message, state: FSMContext):
         "last_name": message.from_user.last_name
     }
     click_repo.record_click(utm_source, message.from_user.id, user_data)
-    
-    # Определяем сегмент по английским UTM ключам
+
     segment = "unknown"
     utm_name = "organic"
-    
-    # Если UTM есть в наших сегментах, берем русское название
+
     if utm_source in config.UTM_SEGMENTS:
         utm_name = config.UTM_SEGMENTS[utm_source]
         segment = utm_name
-    
-    # Сохраняем в состоянии (КЛЮЧЕВОЕ ИЗМЕНЕНИЕ!)
+
     await state.update_data(
-        utm_source=utm_source,      # Первоначальный UTM (не меняется)
-        current_utm=utm_source,     # Текущий UTM (меняется при новых переходах!)
-        segment=segment,            # Русское название сегмента
-        user_path=[]               # Путь пользователя
+        utm_source=utm_source,
+        current_utm=utm_source,
+        segment=segment,
+        user_path=[]
     )
-    
-    # Безопасное логирование - только ID и UTM
+
     logger.info(f"🎯 Пользователь {message.from_user.id} пришел с UTM: {utm_source} -> {utm_name}")
-    
-    # Стартовое сообщение
+
     await message.answer(
         "Выберите Ваш запрос:",
         reply_markup=get_main_menu()
@@ -64,7 +56,6 @@ async def handle_utm_callback(callback: CallbackQuery, state: FSMContext):
     utm_source = callback.data
     
     if utm_source in config.UTM_SEGMENTS:
-        # Обновляем текущий UTM в состоянии
         await state.update_data(current_utm=utm_source)
         
         utm_name = config.UTM_SEGMENTS[utm_source]

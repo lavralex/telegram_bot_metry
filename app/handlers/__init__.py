@@ -13,7 +13,7 @@ from .admin_chat import admin_chat_router
 
 __all__ = [
     'start_router',
-    'utm_router',  # Добавляем новый роутер
+    'utm_router',
     'investment_router',
     'living_router', 
     'manager_router',

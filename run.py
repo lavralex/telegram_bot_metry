@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Скрипт для запуска бота с автоматической миграцией
 """
@@ -12,7 +11,6 @@ def run_alembic_migration():
     print("🔄 Проверка миграций Alembic...")
     
     try:
-        # Проверяем наличие миграций
         result = subprocess.run(
             [sys.executable, "-m", "alembic", "current"],
             capture_output=True,
@@ -36,7 +34,6 @@ def create_auto_migration():
     print("🔄 Создание автоматической миграции...")
     
     try:
-        # Создаем новую миграцию
         result = subprocess.run(
             [sys.executable, "-m", "alembic", "revision", "--autogenerate", "-m", "Auto migration"],
             capture_output=True,
@@ -45,8 +42,7 @@ def create_auto_migration():
         
         if result.returncode == 0:
             print("✅ Миграция создана")
-            
-            # Применяем миграцию
+
             result = subprocess.run(
                 [sys.executable, "-m", "alembic", "upgrade", "head"],
                 capture_output=True,
@@ -74,7 +70,6 @@ def run_bot():
     print("🚀 Запуск бота...")
     
     try:
-        # Импортируем и запускаем main
         from app.main import main
         import asyncio
         asyncio.run(main())
@@ -89,16 +84,12 @@ if __name__ == "__main__":
     print("🤖 TELEGRAM BOT LAUNCHER")
     print("=" * 50)
     
-    # Проверяем наличие .env файла
     if not os.path.exists(".env") and not os.path.exists(".env.development"):
         print("⚠️ Внимание: .env файл не найден")
         print("Создайте .env файл из .env.example")
     
-    # Проверяем миграции
     if run_alembic_migration():
-        # Если миграции настроены, запускаем бота
         run_bot()
     else:
         print("⚠️ Попытка автоматического создания таблиц...")
-        # Запускаем бота, который сам создаст таблицы
         run_bot()

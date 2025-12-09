@@ -1,4 +1,5 @@
 from typing import Optional, Dict, Any
+from datetime import datetime
 from app.application.repositories.lead_repository import LeadRepository
 from app.infrastructure.database.models import LeadStatus
 
@@ -6,7 +7,10 @@ class LeadService:
     def __init__(self, lead_repository: LeadRepository):
         self.lead_repository = lead_repository
 
-    def create_lead_from_state(self, user_data: Dict[str, Any], state_data: Dict[str, Any]) -> Any:
+    def create_lead_from_state(self, user_data: Dict[str, Any], state_data: Dict[str, Any]) -> tuple:
+        """
+        Создает лид и возвращает кортеж (lead_object, bitrix_data)
+        """
         lead_data = {
             "user_id": user_data.get("id"),
             "username": user_data.get("username"),
@@ -20,10 +24,29 @@ class LeadService:
             "management": state_data.get("management"),
             "experience": state_data.get("experience"),
             "user_path": state_data.get("user_path", []),
-            "status": LeadStatus.NEW.value  # Используем значение enum
+            "status": LeadStatus.NEW.value
         }
         
-        return self.lead_repository.create_lead(lead_data)
+        lead = self.lead_repository.create_lead(lead_data)
+        
+        bitrix_data = {
+            "id": user_data.get("id"),
+            "user_id": user_data.get("id"),
+            "username": user_data.get("username"),
+            "first_name": user_data.get("first_name"),
+            "last_name": user_data.get("last_name"),
+            "phone": state_data.get("phone"),
+            "segment": state_data.get("segment", "unknown"),
+            "utm_source": state_data.get("utm_source", "organic"),
+            "budget": state_data.get("budget"),
+            "timeline": state_data.get("timeline"),
+            "management": state_data.get("management"),
+            "experience": state_data.get("experience"),
+            "user_path": state_data.get("user_path", []),
+            "timestamp": datetime.now()
+        }
+        
+        return lead, bitrix_data
 
     def get_daily_stats(self) -> Dict[str, Any]:
         today_leads = self.lead_repository.get_today_leads()

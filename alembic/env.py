@@ -6,10 +6,8 @@ import os
 import sys
 from dotenv import load_dotenv
 
-# Добавляем путь к проекту
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-# 👇 ЗАГРУЖАЕМ .env файл
 env = os.getenv('ENV', 'development')
 env_file = f'.env.{env}'
 if os.path.exists(env_file):
@@ -23,7 +21,6 @@ from app.core.config import config as app_config
 # this is the Alembic Config object
 config = context.config
 
-# 👇 БЕРЕМ DATABASE_URL из нашего конфига
 config.set_main_option("sqlalchemy.url", app_config.DATABASE_URL)
 
 # Interpret the config file for Python logging.

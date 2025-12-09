@@ -1,7 +1,8 @@
 from aiogram import Router, F
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
 
+from app.core.config import config
 from app.keyboards.budget import get_budget_keyboard
 from app.keyboards.timeline import get_timeline_keyboard
 from app.keyboards.management import get_management_keyboard
@@ -22,11 +23,8 @@ async def add_step_to_path(state: FSMContext, step: str):
 
 @investment_router.callback_query(F.data == "invest")
 async def investment_start(callback: CallbackQuery, state: FSMContext):
-    # Обновляем сегмент в состоянии
     await state.update_data(segment="investment")
     await add_step_to_path(state, "Недвижимость для инвестиций")
-    
-    # === edit_text (заменяем предыдущее сообщение) ===
     await callback.message.edit_text(
         "Ваш бюджет",
         reply_markup=get_budget_keyboard("investment")
@@ -41,8 +39,7 @@ async def timeline_selected(callback: CallbackQuery, state: FSMContext):
     if current_state != "investment:waiting_for_timeline":
         await callback.answer()
         return
-        
-    # Обрабатываем timeline
+
     timeline = callback.data.replace("timeline_", "")
     timeline_text = {
         "3months": "В течение 3-х месяцев",
@@ -52,8 +49,7 @@ async def timeline_selected(callback: CallbackQuery, state: FSMContext):
     
     await state.update_data(timeline=timeline_text)
     await add_step_to_path(state, f"Срок: {timeline_text}")
-    
-    # === СООБЩЕНИЕ С КАРТИНКОЙ: answer (новое сообщение) ===
+
     try:
         management_img = FSInputFile(config.management_image_path)
         await callback.message.answer_photo(
@@ -82,21 +78,17 @@ async def management_selected(callback: CallbackQuery, state: FSMContext):
     management_text = "самостоятельно" if callback.data == "management_self" else "через УК"
     await state.update_data(management=management_text)
     await add_step_to_path(state, f"Управление: {management_text}")
-    
-    # === ПРОВЕРЯЕМ: если сообщение с фото - создаем новое, иначе заменяем ===
+
     if callback.message.photo:
-        # Сообщение с фото - создаем новое
         await callback.message.answer(
             "Продолжая диалог, Вы соглашаетесь с Политикой по обработке персональных данных",
             reply_markup=get_policy_keyboard()
         )
     else:
-        # Обычное сообщение - заменяем
         await callback.message.edit_text(
             "Продолжая диалог, Вы соглашаетесь с Политикой по обработке персональных данных",
             reply_markup=get_policy_keyboard()
         )
-    
-    # Сразу переходим к запросу контакта с Reply-клавиатурой
+
     await share_contact(callback, state)
     await callback.answer()

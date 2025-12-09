@@ -7,8 +7,7 @@ def get_budget_keyboard(segment: str = None):
         [InlineKeyboardButton(text="20-30 млн", callback_data="budget_20-30")],
         [InlineKeyboardButton(text="30+ млн", callback_data="budget_30plus")],
     ]
-    
-    # Динамическая кнопка назад
+
     back_data = "back_to_main"
     if segment == "investment":
         back_data = "back_to_main"

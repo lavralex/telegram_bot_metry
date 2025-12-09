@@ -23,13 +23,13 @@ class BroadcastService:
         while self.is_running:
             try:
                 await self.check_scheduled_broadcasts()
-                await asyncio.sleep(30)  # Проверяем каждые 30 секунд
+                await asyncio.sleep(30)
             except asyncio.CancelledError:
                 self.logger.info("🔄 Планировщик рассылок получил сигнал отмены...")
                 break
             except Exception as e:
                 self.logger.error("❌ Ошибка в планировщике рассылок: %s", e)
-                await asyncio.sleep(60)  # Ждем минуту при ошибке
+                await asyncio.sleep(60)
 
     async def stop_scheduler(self):
         """Останавливает планировщик рассылок"""
@@ -61,10 +61,8 @@ class BroadcastService:
             for broadcast in broadcasts:
                 self.logger.info("📢 Отправка запланированной рассылки: %s", broadcast.title)
                 
-                # Получаем репозиторий лидов
                 lead_repo = get_lead_repository()
                 try:
-                    # Получаем всех пользователей
                     leads = lead_repo.db.query(Lead).all()
                     users = set(lead.user_id for lead in leads)
                     
@@ -110,7 +108,6 @@ class BroadcastService:
         self.logger.info("📫 Рассылка завершена: %d успешно, %d неудачно", success, failed)
         return success, failed
 
-# Глобальный экземпляр сервиса
 broadcast_service = None
 
 async def start_broadcast_scheduler(bot):
