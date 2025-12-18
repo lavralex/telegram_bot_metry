@@ -3,7 +3,7 @@ from aiogram.types import CallbackQuery, Message, ReplyKeyboardMarkup, KeyboardB
 from aiogram.fsm.context import FSMContext
 
 from app.core.config import config
-from app.core.dependencies import get_lead_repository
+from app.core.dependencies import get_lead_repository, get_user_repository
 from app.application.services.lead_service import LeadService
 from app.keyboards.contact import get_subscribe_keyboard
 from app.infrastructure.external.bitrix24 import create_bitrix_lead
@@ -53,11 +53,14 @@ async def process_contact_all(message: Message, state: FSMContext):
 
     user_data = await state.get_data()
 
+    user_repo = get_user_repository()
+    user_repo.mark_contact_shared(message.from_user.id, phone)
+
     lead_repo = get_lead_repository()
     lead_service = LeadService(lead_repo)
     
     user_info = {
-        "id": message.from_user.id,
+        "user_id": message.from_user.id,
         "username": message.from_user.username,
         "first_name": message.from_user.first_name,
         "last_name": message.from_user.last_name
@@ -66,6 +69,9 @@ async def process_contact_all(message: Message, state: FSMContext):
     try:
         lead, bitrix_data = lead_service.create_lead_from_state(user_info, user_data)
         logger.info(f"✅ Лид сохранен в БД с ID: {lead.id}")
+
+        user_repo.mark_lead_created(message.from_user.id)
+        
     except Exception as e:
         logger.error(f"❌ Ошибка сохранения лида: {e}")
         await message.answer("Произошла ошибка при сохранении данных. Попробуйте позже.")
@@ -122,7 +128,7 @@ async def print_lead_info(user_info: dict, user_data: dict, lead_id: int):
 🔗 Источник трафика: {traffic_source}
 🏷️ UTM метка: {utm_source}
 🛣️ Путь пользователя: {user_journey}
-👤 User ID: {user_info.get('id')}
+👤 User ID: {user_info.get('user_id')}
     """)
 
 async def send_final_messages(message: Message, segment: str, user_data: dict):

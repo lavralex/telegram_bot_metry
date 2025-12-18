@@ -100,3 +100,27 @@ class UserMessage(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     delivered_at = Column(DateTime, nullable=True)
     read_at = Column(DateTime, nullable=True)
+
+class BotUser(Base):
+    __tablename__ = "bot_users"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(BigInteger, unique=True, nullable=False)
+    username = Column(String(100))
+    first_name = Column(String(100))
+    last_name = Column(String(100))
+    phone = Column(String(20))
+    status = Column(String(20), default="active")
+    last_utm_source = Column(String(100), default="organic")
+    last_segment = Column(String(50))
+    has_contact = Column(Boolean, default=False)
+    has_lead = Column(Boolean, default=False)
+    is_subscriber = Column(Boolean, default=False)
+    has_chatted_with_admin = Column(Boolean, default=False)
+    unread_admin_messages = Column(Integer, default=0)
+    first_seen_at = Column(DateTime, default=datetime.utcnow)
+    last_activity_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    contact_shared_at = Column(DateTime)
+    lead_created_at = Column(DateTime)
+    last_user_path = Column(JSON)
+    user_metadata = Column(JSON, default={})

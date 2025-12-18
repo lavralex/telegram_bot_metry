@@ -3,6 +3,7 @@ import json
 from typing import Dict, Any
 import logging
 from datetime import datetime
+from app.core.config import config
 
 logger = logging.getLogger(__name__)
 
@@ -10,7 +11,7 @@ class Bitrix24Client:
     def __init__(self, webhook_url: str):
         self.webhook_url = webhook_url
         self.session = None
-        self.telegram_source_id = '79673596604'
+        self.telegram_source_id = config.BITRIX24_TELEGRAM_SOURCE_ID
 
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()

@@ -5,7 +5,7 @@ from aiogram.fsm.context import FSMContext
 import logging
 
 from app.core.config import config
-from app.core.dependencies import get_link_click_repository
+from app.core.dependencies import get_link_click_repository, get_user_repository
 from app.keyboards.main_menu import get_main_menu
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,9 @@ async def handle_start_with_utm(message: Message, state: FSMContext):
         "last_name": message.from_user.last_name
     }
     click_repo.record_click(utm_source, message.from_user.id, user_data)
+
+    user_repo = get_user_repository()
+    user_repo.get_or_create_user(user_data, utm_source)
 
     segment = "unknown"
     utm_name = "organic"
@@ -57,6 +60,15 @@ async def handle_utm_callback(callback: CallbackQuery, state: FSMContext):
     
     if utm_source in config.UTM_SEGMENTS:
         await state.update_data(current_utm=utm_source)
+
+        user_repo = get_user_repository()
+        try:
+            user = user_repo.get_user_by_id(callback.from_user.id)
+            if user:
+                user.last_utm_source = utm_source
+                user_repo.db.commit()
+        finally:
+            user_repo.db.close()
         
         utm_name = config.UTM_SEGMENTS[utm_source]
         logger.info(f"🔄 Пользователь {callback.from_user.id} сменил UTM на: {utm_source} ({utm_name})")

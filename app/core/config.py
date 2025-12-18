@@ -18,6 +18,7 @@ class Config:
     
     BITRIX24_WEBHOOK_URL = os.getenv("BITRIX24_WEBHOOK_URL", "")
     BITRIX24_ENABLED = os.getenv("BITRIX24_ENABLED", "false").lower() == "true"
+    BITRIX24_TELEGRAM_SOURCE_ID = os.getenv("BITRIX24_TELEGRAM_SOURCE_ID", "79673596604")
     
     UTM_SEGMENTS = {
         "utm_elit": "Элитная недвижимость",
@@ -28,7 +29,10 @@ class Config:
         "utm_finance": "Финансы",
         "utm_invest": "Инвестиции",
         "utm_blogs": "Блоги об инвестициях и недвижимости",
-        "utm_sublease": "Субаренда"
+        "utm_sublease": "Субаренда",
+        "utm_old_nedviga": "Старая недвижимость",
+        "utm_old_apart": "Старые апартаменты",
+        "utm_old_elite": "Старая элитная недвижимость"
     }
     
     ENABLE_ADMIN_CHAT = os.getenv("ENABLE_ADMIN_CHAT", "true").lower() == "true"

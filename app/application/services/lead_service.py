@@ -11,8 +11,13 @@ class LeadService:
         """
         Создает лид и возвращает кортеж (lead_object, bitrix_data)
         """
+        user_id = user_data.get("user_id") or user_data.get("id")
+        
+        if not user_id:
+            raise ValueError("user_id не найден в user_data")
+        
         lead_data = {
-            "user_id": user_data.get("id"),
+            "user_id": user_id,
             "username": user_data.get("username"),
             "first_name": user_data.get("first_name"),
             "last_name": user_data.get("last_name"),
@@ -30,8 +35,8 @@ class LeadService:
         lead = self.lead_repository.create_lead(lead_data)
         
         bitrix_data = {
-            "id": user_data.get("id"),
-            "user_id": user_data.get("id"),
+            "id": user_id,
+            "user_id": user_id,
             "username": user_data.get("username"),
             "first_name": user_data.get("first_name"),
             "last_name": user_data.get("last_name"),

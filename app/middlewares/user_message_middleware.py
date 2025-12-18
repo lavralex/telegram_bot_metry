@@ -2,8 +2,9 @@ from aiogram import BaseMiddleware
 from aiogram.types import Message, Update
 from typing import Callable, Dict, Any, Awaitable
 import logging
+
 from app.core.config import config
-from app.core.dependencies import get_message_repository, get_lead_repository
+from app.core.dependencies import get_message_repository, get_lead_repository, get_user_repository
 from app.infrastructure.database.models import Lead
 from sqlalchemy import desc
 
@@ -23,6 +24,33 @@ class UserMessageMiddleware(BaseMiddleware):
 
         if message.chat.type == "private":
             user_id = message.from_user.id
+
+            user_repo = get_user_repository()
+            try:
+                state = data.get('state')
+                utm_source = "organic"
+                if state:
+                    try:
+                        state_data = await state.get_data()
+                        utm_source = state_data.get('utm_source', 'organic')
+                    except:
+                        pass
+                
+                user_data = {
+                    "user_id": user_id,
+                    "username": message.from_user.username,
+                    "first_name": message.from_user.first_name,
+                    "last_name": message.from_user.last_name
+                }
+
+                user_repo.get_or_create_user(user_data, utm_source)
+
+                user_repo.update_user_activity(user_id)
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка трекинга пользователя: {e}")
+            finally:
+                user_repo.db.close()
 
             if message.text and message.text.startswith('/'):
                 return await handler(event, data)
@@ -49,11 +77,14 @@ class UserMessageMiddleware(BaseMiddleware):
                 else:
                     state = data.get('state')
                     if state:
-                        state_data = await state.get_data()
-                        utm_from_state = state_data.get('utm_source', 'organic')
-                        if utm_from_state != 'organic':
-                            utm_to_use = utm_from_state
-                            logger.info(f"ℹ️ Используем UTM из состояния: {utm_to_use}")
+                        try:
+                            state_data = await state.get_data()
+                            utm_from_state = state_data.get('utm_source', 'organic')
+                            if utm_from_state != 'organic':
+                                utm_to_use = utm_from_state
+                                logger.info(f"ℹ️ Используем UTM из состояния: {utm_to_use}")
+                        except:
+                            pass
 
                 message_data = {
                     'user_id': user_id,
@@ -71,6 +102,12 @@ class UserMessageMiddleware(BaseMiddleware):
                 
                 db_message = message_repo.create_message(message_data)
                 logger.info(f"💬 Сообщение от пользователя {user_id} сохранено, UTM: {utm_to_use}")
+
+                user_repo_again = get_user_repository()
+                try:
+                    user_repo_again.update_chat_status(user_id, True)
+                finally:
+                    user_repo_again.db.close()
 
                 await self.forward_to_admins(message, user_id, lead, utm_to_use)
                 
