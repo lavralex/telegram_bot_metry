@@ -64,6 +64,10 @@ class Config:
         return self.media_path / "Аналитика доходности ГК МЕТРЫ.pdf"
     
     @property
+    def investor_portfolio_path(self):
+        return self.media_path / "Портфель инвестора.pdf"
+    
+    @property
     def is_production(self):
         return self.ENV == "production"
     

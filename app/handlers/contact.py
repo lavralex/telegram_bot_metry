@@ -15,6 +15,16 @@ contact_router = Router()
 
 async def share_contact(message_or_callback, state: FSMContext):
     """Универсальная функция для запроса контакта"""
+    data = await state.get_data()
+    segment = data.get('segment', 'unknown')
+    experience = data.get('experience', '')
+
+    show_new_auth_message = False
+    if segment in ["investment", "living"]:
+        show_new_auth_message = True
+    elif segment == "manager" and experience != "уже инвестировал(а)":
+        show_new_auth_message = True
+    
     reply_keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📞 Поделиться контактом", request_contact=True)]
@@ -23,18 +33,15 @@ async def share_contact(message_or_callback, state: FSMContext):
         one_time_keyboard=True
     )
 
-    if isinstance(message_or_callback, CallbackQuery):
-        await message_or_callback.message.answer(
-            "Пожалуйста, авторизуйтесь, нажав кнопку внизу экрана.\n"
-            "Ваши данные полностью защищены — обещаем, никаких навязчивых звонков",
-            reply_markup=reply_keyboard
-        )
+    if show_new_auth_message:
+        auth_message = "Пройдите авторизацию, и персональный менеджер вышлет каталог объектов с доходностью от 40%"
     else:
-        await message_or_callback.answer(
-            "Пожалуйста, авторизуйтесь, нажав кнопку внизу экрана.\n"
-            "Ваши данные полностью защищены — обещаем, никаких навязчивых звонков",
-            reply_markup=reply_keyboard
-        )
+        auth_message = "Пожалуйста, авторизуйтесь, нажав кнопку внизу экрана.\nВаши данные полностью защищены — обещаем, никаких навязчивых звонков"
+
+    if isinstance(message_or_callback, CallbackQuery):
+        await message_or_callback.message.answer(auth_message, reply_markup=reply_keyboard)
+    else:
+        await message_or_callback.answer(auth_message, reply_markup=reply_keyboard)
     
     await state.set_state("waiting_for_phone_contact")
 
@@ -95,7 +102,8 @@ async def process_contact_all(message: Message, state: FSMContext):
         pass
 
     segment = user_data.get('segment', 'unknown')
-    await send_final_messages(message, segment, user_data)
+    experience = user_data.get('experience', '')
+    await send_final_messages(message, segment, experience)
     
     await state.clear()
 
@@ -131,7 +139,7 @@ async def print_lead_info(user_info: dict, user_data: dict, lead_id: int):
 👤 User ID: {user_info.get('user_id')}
     """)
 
-async def send_final_messages(message: Message, segment: str, user_data: dict):
+async def send_final_messages(message: Message, segment: str, experience: str):
     """Отправляет финальные сообщения в зависимости от сегмента"""
     if segment == "analytics":
         try:
@@ -151,17 +159,43 @@ async def send_final_messages(message: Message, segment: str, user_data: dict):
         await send_subscribe_message(message)
         
     elif segment == "manager":
-        experience = user_data.get('experience', '')
         if experience == "уже инвестировал(а)":
             await message.answer("Отлично! Персональный менеджер скоро свяжется с Вами!")
+            await send_subscribe_message(message)
         else:
-            await message.answer("Благодарим! Ваш персональный менеджер скоро свяжется с вами.")
-
+            try:
+                investor_portfolio_file = FSInputFile(config.investor_portfolio_path)
+                await message.answer_document(
+                    document=investor_portfolio_file,
+                    caption="Благодарим! Ваш персональный менеджер скоро свяжется с вами. А пока предлагаем изучить <b>Стратегию доходности: как получить от 40% прибыли за 1,5 года</b>",
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                logger.error(f"❌ Ошибка отправки PDF портфеля инвестора: {e}")
+                await message.answer(
+                    "Благодарим! Ваш персональный менеджер скоро свяжется с вами. А пока предлагаем изучить <b>Стратегию доходности: как получить от 40% прибыли за 1,5 года</b>",
+                    parse_mode="HTML"
+                )
             await send_subscribe_message(message)
             
+    elif segment in ["investment", "living"]:
+        try:
+            investor_portfolio_file = FSInputFile(config.investor_portfolio_path)
+            await message.answer_document(
+                document=investor_portfolio_file,
+                caption="Благодарим! Ваш персональный менеджер скоро свяжется с вами. А пока предлагаем изучить <b>Стратегию доходности: как получить от 40% прибыли за 1,5 года</b>",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки PDF портфеля инвестора: {e}")
+            await message.answer(
+                "Благодарим! Ваш персональный менеджер скоро свяжется с вами.",
+                parse_mode="HTML"
+            )
+        await send_subscribe_message(message)
+        
     else:
         await message.answer("Благодарим! Ваш персональный менеджер скоро свяжется с вами.")
-
         await send_subscribe_message(message)
 
 async def send_subscribe_message(message: Message):
