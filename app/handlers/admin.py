@@ -1,5 +1,5 @@
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InputFile, FSInputFile, BufferedInputFile
+from aiogram.types import Message, CallbackQuery, InputFile, FSInputFile, BufferedInputFile, InputMediaPhoto
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -34,6 +34,7 @@ def is_admin(user_id: int) -> bool:
 class BroadcastStates(StatesGroup):
     waiting_for_text = State()
     waiting_for_photo = State()
+    waiting_for_file = State()
     waiting_for_time = State()
 
 @admin_router.message(Command("check_broadcasts"))
@@ -464,37 +465,99 @@ async def process_broadcast_text(message: Message, state: FSMContext):
     await state.update_data(text=message.text)
     
     await message.answer(
-        "📷 Хотите добавить изображение?\n"
-        "Отправьте фото или нажмите /skip чтобы пропустить"
+        "📎 Что хотите прикрепить к рассылке?\n\n"
+        "Выберите опцию:\n"
+        "• /add_photo - добавить фото (можно добавить несколько)\n"
+        "• /add_file - добавить файл (PDF, документ)\n"
+        "• /skip - не добавлять вложения\n"
+        "• /done - завершить добавление вложений\n"
+        "• /cancel - отменить создание рассылки\n\n"
+        "💡 *Можно добавить и фото, и файл одновременно*"
+    )
+    await state.set_state(BroadcastStates.waiting_for_photo)
+
+@admin_router.message(BroadcastStates.waiting_for_photo, Command("add_photo"))
+async def broadcast_add_photo_command(message: Message, state: FSMContext):
+    await message.answer(
+        "📷 Отправьте фото для рассылки:\n"
+        "Можно отправить несколько фото подряд\n"
+        "Для завершения отправьте /done\n"
+        "Для отмены отправьте /cancel"
     )
     await state.set_state(BroadcastStates.waiting_for_photo)
 
 @admin_router.message(BroadcastStates.waiting_for_photo, F.photo)
 async def process_broadcast_photo(message: Message, state: FSMContext):
     photo_id = message.photo[-1].file_id
-    await state.update_data(photo=photo_id)
+    
+    data = await state.get_data()
+    photos = data.get('photos', [])
+    photos.append(photo_id)
+    
+    await state.update_data(photos=photos)
     
     await message.answer(
-        "⏰ Когда отправить рассылку?\n\n"
+        f"✅ Фото добавлено (всего: {len(photos)})\n"
+        "Отправьте ещё фото или:\n"
+        "• /add_file - добавить файл\n"
+        "• /done - завершить добавление вложений\n"
+        "• /skip - не добавлять вложения"
+    )
+
+@admin_router.message(BroadcastStates.waiting_for_photo, Command("add_file"))
+async def broadcast_add_file_command(message: Message, state: FSMContext):
+    await message.answer(
+        "📎 Отправьте файл для рассылки (PDF, документ):\n"
+        "Для отмены отправьте /cancel"
+    )
+    await state.set_state(BroadcastStates.waiting_for_file)
+
+@admin_router.message(BroadcastStates.waiting_for_file, F.document)
+async def process_broadcast_file(message: Message, state: FSMContext):
+    document_id = message.document.file_id
+    file_name = message.document.file_name or "Файл"
+    
+    await state.update_data(file=document_id, file_name=file_name)
+    
+    await message.answer(
+        f"✅ Файл добавлен: {file_name}\n"
+        "Вы можете:\n"
+        "• /add_photo - добавить фото\n"
+        "• /done - завершить добавление вложений\n"
+        "• /skip - не добавлять вложения"
+    )
+
+@admin_router.message(BroadcastStates.waiting_for_photo, Command("done"))
+@admin_router.message(BroadcastStates.waiting_for_file, Command("done"))
+async def process_broadcast_done(message: Message, state: FSMContext):
+    await ask_for_schedule_time(message, state)
+
+@admin_router.message(BroadcastStates.waiting_for_photo, Command("skip"))
+@admin_router.message(BroadcastStates.waiting_for_file, Command("skip"))
+async def process_broadcast_skip_attachment(message: Message, state: FSMContext):
+    await state.update_data(photos=[], file=None, file_name=None)
+    await ask_for_schedule_time(message, state)
+
+async def ask_for_schedule_time(message: Message, state: FSMContext):
+    data = await state.get_data()
+    attachment_info = ""
+    photos = data.get('photos', [])
+    file = data.get('file')
+    
+    if photos:
+        attachment_info += f"\n📷 Фото: {len(photos)} шт."
+    if file:
+        file_name = data.get('file_name', 'файл')
+        attachment_info += f"\n📎 Файл: {file_name}"
+    
+    if not attachment_info:
+        attachment_info = "\n📎 Вложений нет"
+    
+    await message.answer(
+        f"⏰ Когда отправить рассылку?{attachment_info}\n\n"
         "Варианты:\n"
         "• `now` - отправить сейчас\n"
         "• `14:30` - сегодня в указанное время\n" 
-        "• `01.12.2024 14:30` - конкретная дата и время\n"
-        "• `+2 hours` - через 2 часа\n"
-        "• `tomorrow 10:00` - завтра в 10:00\n\n"
-        "💡 *Время указывается по Москве*"
-    )
-    await state.set_state(BroadcastStates.waiting_for_time)
-
-@admin_router.message(BroadcastStates.waiting_for_photo, Command("skip"))
-async def process_broadcast_skip_photo(message: Message, state: FSMContext):
-    await state.update_data(photo=None)
-    
-    await message.answer(
-        "⏰ Когда отправить рассылки?\n\n"
-        "Варианты:\n"
-        "• `now` - отправить сейчас\n"
-        "• `14:30` - сегодня в указанное время\n"
         "• `01.12.2024 14:30` - конкретная дата и время\n"
         "• `+2 hours` - через 2 часа\n"
         "• `tomorrow 10:00` - завтра в 10:00\n\n"
@@ -516,27 +579,62 @@ async def process_broadcast_time(message: Message, state: FSMContext):
         moscow_time = send_time + timedelta(hours=3)
         
         if send_time <= datetime.utcnow():
-            success, failed = await send_broadcast(message.bot, data['text'], data.get('photo'))
+            photos = data.get('photos', [])
+            file = data.get('file')
+            file_name = data.get('file_name')
+            
+            success, failed = await send_broadcast(
+                message.bot, 
+                data['text'], 
+                photos,
+                file,
+                file_name
+            )
             status = f"✅ Отправлено сразу\nУспешно: {success}, Не удалось: {failed}"
         else:
             db = SessionLocal()
+            photos = data.get('photos', [])
+            file_url = data.get('file')
+            file_name = data.get('file_name')
+            has_photos = bool(photos)
+            has_file = bool(file_url)
+            photos_json = photos if has_photos else None
+            photo_url = photos[0] if photos else None
+            
             broadcast = Broadcast(
                 title=f"Рассылка от {datetime.now().strftime('%d.%m.%Y %H:%M')}",
                 message_text=data['text'],
-                photo_url=data.get('photo'),
+                photo_url=photo_url,
+                file_url=file_url,
+                file_name=file_name,
+                photos_json=photos_json,
                 scheduled_time=send_time,
                 status="scheduled",
                 created_by=message.from_user.id
             )
+            
             db.add(broadcast)
             db.commit()
             db.close()
             
             status = f"⏰ Запланировано на {moscow_time.strftime('%d.%m.%Y %H:%M')} по Москве"
+
+        attachment_info = ""
+        photos = data.get('photos', [])
+        file = data.get('file')
+        file_name = data.get('file_name', 'файл')
+        
+        if photos:
+            attachment_info += f"\n📷 Фото: {len(photos)} шт."
+        if file:
+            attachment_info += f"\n📎 Файл: {file_name}"
+        
+        if not attachment_info:
+            attachment_info = "\n📎 Вложений нет"
         
         await message.answer(
             f"📢 **РАССЫЛКА СОЗДАНА**\n\n"
-            f"{status}\n"
+            f"{status}{attachment_info}\n"
             f"Текст: {data['text'][:100]}..."
         )
         
@@ -604,30 +702,67 @@ def parse_time_input(time_input: str) -> datetime:
     
     raise ValueError("Не удалось распознать время. Используйте формат: 14:30 или 01.12.2024 14:30")
 
-async def send_broadcast(bot, text: str, photo: str = None) -> tuple[int, int]:
-    """Отправка рассылки всем пользователям из базы"""
-    lead_repo = get_lead_repository()
+async def send_broadcast(bot, text: str, photos: list = None, file: str = None, file_name: str = None) -> tuple[int, int]:
+    """Отправка рассылки всем пользователям из базы с поддержкой фото и файлов"""
+    user_repo = get_user_repository()
     try:
-        users = set(lead.user_id for lead in lead_repo.db.query(Lead).all())
+        users = user_repo.get_all_users()
+        user_ids = [user.user_id for user in users if user.user_id]
         
         success = 0
         failed = 0
         
-        for user_id in users:
+        for user_id in user_ids:
             try:
-                if photo:
-                    await bot.send_photo(user_id, photo, caption=text)
+                if photos:
+                    from aiogram.types import InputMediaPhoto
+                    
+                    media = []
+                    for i, photo_id in enumerate(photos):
+                        if i == 0 and len(photos) == 1:
+                            media.append(InputMediaPhoto(media=photo_id, caption=text, parse_mode='HTML'))
+                        elif i == 0:
+                            media.append(InputMediaPhoto(media=photo_id, caption=text, parse_mode='HTML'))
+                        else:
+                            media.append(InputMediaPhoto(media=photo_id))
+                    
+                    if len(media) == 1:
+                        await bot.send_photo(
+                            user_id,
+                            photo=photos[0],
+                            caption=text,
+                            parse_mode='HTML'
+                        )
+                    else:
+                        await bot.send_media_group(user_id, media)
+
+                    if file:
+                        await bot.send_document(
+                            user_id, 
+                            document=file,
+                            caption=None,
+                            parse_mode='HTML'
+                        )
+
+                elif file:
+                    await bot.send_document(
+                        user_id, 
+                        document=file,
+                        caption=text,
+                        parse_mode='HTML'
+                    )
                 else:
-                    await bot.send_message(user_id, text)
+                    await bot.send_message(user_id, text, parse_mode='HTML')
+                    
                 success += 1
                 await asyncio.sleep(0.05)
             except Exception as e:
-                print(f"❌ Ошибка отправки пользователю {user_id}: {e}")
+                logger.error(f"❌ Ошибка отправки пользователю {user_id}: {e}")
                 failed += 1
         
         return success, failed
     finally:
-        lead_repo.db.close()
+        user_repo.db.close()
 
 @admin_router.message(Command("broadcasts"))
 async def admin_broadcasts(message: Message):
@@ -647,13 +782,20 @@ async def admin_broadcasts(message: Message):
         
         for broadcast in broadcasts:
             status_emoji = BROADCAST_STATUS_EMOJI.get(broadcast.status, "❓")
-
             moscow_time = broadcast.scheduled_time + timedelta(hours=3)
+            attachment_emoji = ""
+            if broadcast.photo_url:
+                if broadcast.file_name:
+                    attachment_emoji = "📎+📷"
+                else:
+                    attachment_emoji = "📷"
+            elif broadcast.file_name:
+                attachment_emoji = "📎"
             
             broadcasts_text += (
                 f"{status_emoji} **{broadcast.title}**\n"
                 f"⏰ {moscow_time.strftime('%d.%m.%Y %H:%M')} по Москве\n"
-                f"📝 {broadcast.message_text[:50]}...\n"
+                f"{attachment_emoji} {broadcast.message_text[:50]}...\n"
                 f"📊 Статус: {broadcast.status}\n"
                 f"---\n"
             )
@@ -997,7 +1139,7 @@ async def admin_help(message: Message):
         "• /export_clicks all - экспорт всех кликов\n\n"
         
         "📢 **Рассылки:**\n"
-        "• /broadcast - создание рассылки (текст + фото + время)\n"
+        "• /broadcast - создание рассылки (текст + фото + файл + время)\n"
         "• /broadcasts - просмотр запланированных рассылок\n"
         "• /quick_send [текст] - быстрая рассылка (только текст)\n"
         "• /check_broadcasts - проверить и отправить запланированные\n\n"
