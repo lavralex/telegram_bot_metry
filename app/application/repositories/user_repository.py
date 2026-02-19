@@ -12,7 +12,6 @@ class UserRepository:
         self.db = db
     
     def get_or_create_user(self, user_data: Dict[str, Any], utm_source: str = "organic") -> BotUser:
-        """Получить или создать пользователя"""
         user_id = user_data.get("user_id") or user_data.get("id")
         
         if not user_id:
@@ -50,7 +49,6 @@ class UserRepository:
         return user
     
     def update_user_activity(self, user_id: int, segment: str = None, user_path: List[str] = None):
-        """Обновить активность пользователя"""
         user = self.db.query(BotUser).filter(BotUser.user_id == user_id).first()
         if user:
             user.last_activity_at = datetime.utcnow()

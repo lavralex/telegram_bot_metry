@@ -1,166 +1,251 @@
-import aiohttp
-import json
-from typing import Dict, Any
+from __future__ import annotations
+
 import logging
 from datetime import datetime
+from typing import Any, Dict, Optional
+
+import aiohttp
+
 from app.core.config import config
+from app.infrastructure.external.bitrix_oauth import BitrixOAuthService
 
 logger = logging.getLogger(__name__)
 
-class Bitrix24Client:
-    def __init__(self, webhook_url: str):
-        self.webhook_url = webhook_url
-        self.session = None
-        self.telegram_source_id = config.BITRIX24_TELEGRAM_SOURCE_ID
 
-    async def __aenter__(self):
+class BitrixWebhookClient:
+
+    def __init__(self, webhook_url: str):
+        self.base = (webhook_url or "").rstrip("/")
+        self.session: Optional[aiohttp.ClientSession] = None
+
+    async def __aenter__(self) -> "BitrixWebhookClient":
         self.session = aiohttp.ClientSession()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type, exc, tb) -> None:
         if self.session:
             await self.session.close()
 
-    async def create_lead(self, lead_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Создает ЛИД в Bitrix24 с существующим источником 'ТГ бот'
-        """
+    async def post(self, method: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.base:
+            return {"success": False, "error": "BITRIX24_WEBHOOK_URL is empty"}
+        if not self.session:
+            raise RuntimeError("BitrixWebhookClient session is not initialized")
+
+        url = f"{self.base}/{method}"
+
         try:
-            utm_source = lead_data.get('utm_source', 'organic')
-            segment = lead_data.get('segment', 'unknown')
-            
-            segment_names = {
-                'investment': 'Недвижимость для инвестиций',
-                'living': 'Недвижимость для жизни', 
-                'manager': 'Связаться с менеджером',
-                'analytics': 'Аналитика доходности',
-                'unknown': 'Неизвестно'
-            }
-            segment_russian = segment_names.get(segment, segment)
-            
-            comments = self._format_comments_with_segment_notes(lead_data, segment_russian)
-            
-            first_name = lead_data.get('first_name', '')
-            last_name = lead_data.get('last_name', '')
-            full_name = f"{first_name} {last_name}".strip()
-            title = f"{segment_russian} - {full_name}" if full_name else segment_russian
-            
-            bitrix_data = {
-                'fields': {
-                    'TITLE': title,
-                    'NAME': first_name,
-                    'LAST_NAME': last_name,
-                    'SOURCE_ID': self.telegram_source_id,
-                    'SOURCE_DESCRIPTION': f"Telegram Bot - UTM: {utm_source}",
-                    'COMMENTS': comments,
-                    'UTM_SOURCE': utm_source,
-                    'UTM_MEDIUM': 'telegram',
-                    'STATUS_ID': 'NEW',
-                    'OPENED': 'Y'
-                }
-            }
-
-            if lead_data.get('phone'):
-                bitrix_data['fields']['PHONE'] = [{
-                    'VALUE': lead_data.get('phone'), 
-                    'VALUE_TYPE': 'WORK'
-                }]
-
-            logger.info(f"📤 Отправка ЛИДА в Bitrix24: {title}")
-            logger.debug(f"Данные: {json.dumps(bitrix_data, ensure_ascii=False, indent=2)}")
-
-            async with self.session.post(
-                f"{self.webhook_url}/crm.lead.add",
-                json=bitrix_data,
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as response:
-                result = await response.json()
-                logger.info(f"Ответ Bitrix24: {result}")
-
-                if response.status == 200 and 'result' in result:
-                    lead_id = result['result']
-                    logger.info(f"✅ ЛИД создан, ID: {lead_id}")
-                    return {'success': True, 'lead_id': lead_id}
-                else:
-                    error_msg = result.get('error_description', 'Unknown error')
-                    logger.error(f"❌ Ошибка Bitrix24: {error_msg}")
-                    return {'success': False, 'error': error_msg}
-
+            async with self.session.post(url, json=payload) as resp:
+                data = await resp.json(content_type=None)
         except Exception as e:
-            logger.error(f"❌ Ошибка при отправке в Bitrix24: {e}", exc_info=True)
-            return {'success': False, 'error': str(e)}
+            logger.exception("Bitrix webhook request failed: %s %s", method, e)
+            return {"success": False, "error": f"Request failed: {e}"}
 
-    def _format_comments_with_segment_notes(self, lead_data: Dict[str, Any], segment_russian: str) -> str:
-        """Форматирует комментарий с пометками для разных сегментов"""
-        parts = []
-        
-        parts.append(f"ЛИД ИЗ TELEGRAM БОТА - {segment_russian}")
-        parts.append("=" * 50)
-        
-        parts.append("ОСНОВНЫЕ ДАННЫЕ:")
-        parts.append(f"Username: @{lead_data.get('username', 'N/A')}")
-        parts.append(f"Имя: {lead_data.get('first_name', '')} {lead_data.get('last_name', '')}")
-        parts.append(f"Телефон: {lead_data.get('phone', 'не указан')}")
-        
-        parts.append("")
-        parts.append("МЕТАДАННЫЕ:")
-        parts.append(f"UTM: {lead_data.get('utm_source', 'organic')}")
-        
-        if lead_data.get('segment') == 'manager':
-            experience = lead_data.get('experience', '')
-            if experience == 'уже инвестировал(а)':
-                parts.append("ПОМЕТКА: СТАРЫЙ КЛИЕНТ - уже инвестировал(а) с нами")
-            else:
-                parts.append("ПОМЕТКА: НОВЫЙ КЛИЕНТ - первый контакт")
-        
-        if lead_data.get('segment') == 'analytics':
-            parts.append("ПОМЕТКА: ЗАПРОС АНАЛИТИКИ ДОХОДНОСТИ ЛОКАЦИЙ")
-        
-        parts.append("")
-        
-        if lead_data.get('budget'):
-            parts.append(f"Бюджет: {lead_data.get('budget')}")
-        if lead_data.get('timeline'):
-            parts.append(f"Срок: {lead_data.get('timeline')}")
-        if lead_data.get('management'):
-            parts.append(f"Управление: {lead_data.get('management')}")
-        if lead_data.get('experience') and lead_data.get('segment') != 'manager':
-            parts.append(f"Опыт: {lead_data.get('experience')}")
-        
-        if lead_data.get('user_path'):
-            parts.append("")
-            parts.append("ПУТЬ ПОЛЬЗОВАТЕЛЯ:")
-            parts.append("-" * 25)
-            for i, step in enumerate(lead_data.get('user_path', []), 1):
-                parts.append(f"{i}. {step}")
-        
-        parts.append("")
-        parts.append("ТЕХНИЧЕСКАЯ ИНФОРМАЦИЯ:")
-        parts.append(f"Источник: ТГ бот (ID: {self.telegram_source_id})")
-        parts.append(f"Время создания: {lead_data.get('timestamp', datetime.now()).strftime('%Y-%m-%d %H:%M')}")
-        
-        return "\n".join(parts)
+        if isinstance(data, dict) and data.get("error"):
+            logger.error("Bitrix webhook error (%s): %s", method, data)
+            return {
+                "success": False,
+                "error": data.get("error"),
+                "error_description": data.get("error_description"),
+                "raw": data,
+            }
 
-bitrix_client = None
+        return {"success": True, "result": data.get("result") if isinstance(data, dict) else data}
 
-async def init_bitrix_client(webhook_url: str):
-    """Инициализирует клиент Bitrix24"""
-    global bitrix_client
-    if webhook_url:
-        bitrix_client = Bitrix24Client(webhook_url)
-        logger.info(f"Bitrix24 клиент инициализирован: {webhook_url}")
-        logger.info(f"Используется источник: ТГ бот (ID: {bitrix_client.telegram_source_id})")
+
+class BitrixOAuthRestClient:
+
+    def __init__(self, portal: str, oauth: BitrixOAuthService):
+        self.portal = (portal or "").strip()
+        self.oauth = oauth
+        self.session: Optional[aiohttp.ClientSession] = None
+
+    async def __aenter__(self) -> "BitrixOAuthRestClient":
+        self.session = aiohttp.ClientSession()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        if self.session:
+            await self.session.close()
+
+    def _base_url(self) -> str:
+        if not self.portal:
+            return ""
+        if self.portal.startswith("http://") or self.portal.startswith("https://"):
+            return self.portal.rstrip("/")
+        return f"https://{self.portal}".rstrip("/")
+
+    async def post(self, method: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.session:
+            raise RuntimeError("BitrixOAuthRestClient session is not initialized")
+
+        base = self._base_url()
+        if not base:
+            return {"success": False, "error": "BITRIX24_PORTAL is empty (required for OAuth mode)"}
+
+        token = await self.oauth.get_access_token()
+        if not token:
+            return {"success": False, "error": "OAuth token is missing (install app / obtain tokens first)"}
+
+        url = f"{base}/rest/{method}.json"
+        body = dict(payload)
+        body.setdefault("auth", token)
+
+        try:
+            async with self.session.post(url, json=body) as resp:
+                data = await resp.json(content_type=None)
+        except Exception as e:
+            logger.exception("Bitrix OAuth request failed: %s %s", method, e)
+            return {"success": False, "error": f"Request failed: {e}"}
+
+        if isinstance(data, dict) and data.get("error"):
+            logger.error("Bitrix OAuth error (%s): %s", method, data)
+            return {
+                "success": False,
+                "error": data.get("error"),
+                "error_description": data.get("error_description"),
+                "raw": data,
+            }
+
+        return {"success": True, "result": data.get("result") if isinstance(data, dict) else data}
+
+
+def _is_enabled() -> bool:
+    return bool(getattr(config, "BITRIX24_ENABLED", False))
+
+
+def _use_oauth() -> bool:
+    return bool(getattr(config, "BITRIX24_USE_OAUTH", False))
+
+
+def _webhook_url() -> str:
+    return str(getattr(config, "BITRIX24_WEBHOOK_URL", "") or "").rstrip("/")
+
+
+def _portal() -> str:
+    return str(getattr(config, "BITRIX24_PORTAL", "") or "").strip()
+
+
+def _lead_source_id() -> str:
+    return str(getattr(config, "BITRIX24_TELEGRAM_SOURCE_ID", "") or "").strip()
+
+
+def _openlines_line_id() -> str:
+    return str(getattr(config, "BITRIX24_OPENLINE_ID", "") or "").strip()
+
+
+def _openlines_connector_id() -> str:
+    return str(getattr(config, "BITRIX24_CONNECTOR_ID", "") or "").strip()
+
+
+async def _post_bitrix(method: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+
+    if _use_oauth():
+        oauth = BitrixOAuthService()
+        async with BitrixOAuthRestClient(_portal(), oauth) as bx:
+            return await bx.post(method, payload)
+
+    async with BitrixWebhookClient(_webhook_url()) as bx:
+        return await bx.post(method, payload)
+
+
+async def ensure_bitrix_lead(lead_obj: Any, fields: Dict[str, Any]) -> Dict[str, Any]:
+    if not _is_enabled():
+        return {"success": False, "error": "BITRIX24_ENABLED=false"}
+
+    if not _use_oauth() and not _webhook_url():
+        return {"success": False, "error": "BITRIX24_WEBHOOK_URL is empty (webhook mode)"}
+    if _use_oauth() and not _portal():
+        return {"success": False, "error": "BITRIX24_PORTAL is empty (oauth mode)"}
+
+    bitrix_lead_id = getattr(lead_obj, "bitrix_lead_id", None)
+
+    source_id = _lead_source_id()
+    if source_id and "SOURCE_ID" not in fields:
+        fields["SOURCE_ID"] = source_id
+
+    fields.setdefault("OPENED", "Y")
+    fields.setdefault("STATUS_ID", "NEW")
+
+    fields.setdefault("timestamp", datetime.now().isoformat())
+
+    if bitrix_lead_id:
+        payload = {"id": int(bitrix_lead_id), "fields": fields}
+        res = await _post_bitrix("crm.lead.update", payload)
+        if res.get("success"):
+            return {"success": True, "lead_id": int(bitrix_lead_id), "created": False}
+        return res
+
+    payload = {"fields": fields}
+    res = await _post_bitrix("crm.lead.add", payload)
+    if res.get("success"):
+        try:
+            new_id = int(res["result"])
+        except Exception:
+            return {"success": False, "error": "Unexpected crm.lead.add response", "raw": res}
+        return {"success": True, "lead_id": new_id, "created": True}
+
+    return res
+
+
+async def send_message_to_openlines(
+    *,
+    lead_id: int,
+    tg_user_id: int,
+    tg_username: str,
+    text: str,
+    message_id: str,
+    unix_date: int,
+) -> Dict[str, Any]:
+    """
+    Отправка сообщения в Открытую линию через коннектор.
+    В OAuth-режиме это обязательно (иначе WRONG_AUTH_TYPE).
+    """
+    if not _is_enabled():
+        return {"success": False, "error": "BITRIX24_ENABLED=false"}
+
+    if not _use_oauth() and not _webhook_url():
+        return {"success": False, "error": "BITRIX24_WEBHOOK_URL is empty (webhook mode)"}
+    if _use_oauth() and not _portal():
+        return {"success": False, "error": "BITRIX24_PORTAL is empty (oauth mode)"}
+
+    line = _openlines_line_id()
+    if not line:
+        return {"success": False, "error": "BITRIX24_OPENLINE_ID (LINE) is empty"}
+
+    connector = _openlines_connector_id()
+    if not connector:
+        return {"success": False, "error": "BITRIX24_CONNECTOR_ID (CONNECTOR) is empty"}
+
+    user_display = f"@{tg_username}" if tg_username else str(tg_user_id)
+
+    payload = {
+        "CONNECTOR": connector,
+        "LINE": line,
+        "MESSAGES": [
+            {
+                "user": {"id": str(tg_user_id), "name": user_display},
+                "message": {"id": str(message_id), "date": int(unix_date), "text": text},
+                "chat": {"id": str(tg_user_id), "name": f"Telegram {tg_user_id}"},
+                "crm": {"lead": int(lead_id)} if int(lead_id) > 0 else {},
+            }
+        ],
+    }
+
+    logger.info(
+        "📨 OpenLines send: mode=%s connector=%s line=%s tg_user_id=%s msg_id=%s",
+        "oauth" if _use_oauth() else "webhook",
+        connector,
+        line,
+        tg_user_id,
+        message_id,
+    )
+
+    res = await _post_bitrix("imconnector.send.messages", payload)
+
+    if not res.get("success"):
+        logger.warning("⚠️ OpenLines send failed: %s %s", res.get("error"), res.get("error_description"))
     else:
-        logger.warning("Bitrix24 webhook URL не указан, интеграция отключена")
+        logger.info("✅ OpenLines send OK: %s", str(res.get("result"))[:200])
 
-async def create_bitrix_lead(lead_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Создает ЛИД в Bitrix24 (обертка для глобального клиента)"""
-    global bitrix_client
-    if not bitrix_client:
-        return {'success': False, 'error': 'Bitrix24 клиент не инициализирован'}
-    
-    if 'timestamp' not in lead_data:
-        lead_data['timestamp'] = datetime.now()
-    
-    async with bitrix_client as client:
-        return await client.create_lead(lead_data)
+    return res
