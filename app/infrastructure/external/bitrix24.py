@@ -209,9 +209,14 @@ async def send_message_to_openlines(
     if _use_oauth() and not _portal():
         return {"success": False, "error": "BITRIX24_PORTAL is empty (oauth mode)"}
 
-    line = _openlines_line_id()
-    if not line:
+    line_raw = _openlines_line_id()
+    if not line_raw:
         return {"success": False, "error": "BITRIX24_OPENLINE_ID (LINE) is empty"}
+
+    try:
+        line = int(line_raw)
+    except ValueError:
+        return {"success": False, "error": f"Invalid LINE value: {line_raw}"}
 
     connector = _openlines_connector_id()
     if not connector:

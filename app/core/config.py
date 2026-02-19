@@ -52,6 +52,7 @@ class Config:
     BITRIX24_PORTAL = (os.getenv("BITRIX24_PORTAL", "") or "").strip()  # e.g. xxxxx.bitrix24.ru
     BITRIX24_CLIENT_ID = (os.getenv("BITRIX24_CLIENT_ID", "") or "").strip()
     BITRIX24_CLIENT_SECRET = (os.getenv("BITRIX24_CLIENT_SECRET", "") or "").strip()
+    PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL", "") or "").rstrip("/")
     BITRIX24_REDIRECT_URI = (os.getenv("BITRIX24_REDIRECT_URI", "") or "").strip()
 
     # -------- Bitrix Webhook mode (fallback) --------

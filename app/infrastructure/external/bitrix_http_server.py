@@ -82,7 +82,7 @@ def create_app(bot) -> FastAPI:
         return {"ok": True}
 
     @app.get("/bitrix/oauth/callback")
-    async def bitrix_oauth_callback(code: str | None = None, state: str | None = None, **_):
+    async def bitrix_oauth_callback(request: Request, code: str | None = None, state: str | None = None):
         if not code:
             return JSONResponse({"ok": False, "error": "missing_code"}, status_code=400)
 
