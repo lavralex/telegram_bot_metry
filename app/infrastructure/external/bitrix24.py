@@ -351,13 +351,25 @@ async def send_message_to_openlines(
     if not connector:
         return {"success": False, "error": "BITRIX24_CONNECTOR_ID (CONNECTOR) is empty"}
 
-    user_display = f"@{tg_username}" if tg_username else str(tg_user_id)
+    user_display = f"@{tg_username}" if tg_username else f"Telegram {tg_user_id}"
 
     msg: Dict[str, Any] = {
-        "user": {"id": str(tg_user_id), "name": user_display},
-        "message": {"id": str(message_id), "date": int(unix_date), "text": text},
-        "chat": {"id": str(tg_user_id), "name": f"Telegram {tg_user_id}"},
+        "user": {
+            "id": str(tg_user_id),
+            "name": user_display,
+            "url": f"https://t.me/{tg_username}" if tg_username else f"https://t.me/{tg_user_id}",
+        },
+        "chat": {
+            "id": str(tg_user_id),
+            "name": f"Telegram {tg_user_id}",
+        },
+        "message": {
+            "id": str(message_id),
+            "date": int(unix_date),
+            "text": text,
+        },
     }
+
     if int(lead_id) > 0:
         msg["crm"] = {"lead": int(lead_id)}
 
@@ -368,44 +380,43 @@ async def send_message_to_openlines(
     }
 
     logger.warning(
-        "[%s] OpenLines send: mode=%s connector=%s line=%s tg_user_id=%s msg_id=%s lead_id=%s crm_included=%s",
+        "[%s] OpenLines send: connector=%s line=%s tg_user_id=%s msg_id=%s lead_id=%s",
         tid,
-        "oauth" if _use_oauth() else "webhook",
         connector,
         line,
         tg_user_id,
         message_id,
         lead_id,
-        "crm" in msg,
     )
 
     res = await _post_bitrix("imconnector.send.messages", payload, trace_id=tid)
 
     if not res.get("success"):
         logger.warning(
-            "[%s] OpenLines send failed: error=%s desc=%s raw=%s",
+            "[%s] OpenLines HTTP-level failure: %s",
             tid,
-            res.get("error"),
-            res.get("error_description"),
             _truncate(_safe_json(res.get("raw") or res), _dbg_limit()),
         )
+        return res
 
-        if str(res.get("error")) == "NOT_ACTIVE_LINE":
-            diag = await _post_bitrix("imopenlines.config.get", {"CONFIG_ID": line}, trace_id=tid + "L")
-            if diag.get("success"):
-                logger.warning(
-                    "[%s] NOT_ACTIVE_LINE diag config.get OK: %s",
-                    tid,
-                    _truncate(_safe_json(diag.get("result")), _dbg_limit()),
-                )
-            else:
-                logger.warning(
-                    "[%s] NOT_ACTIVE_LINE diag config.get FAILED: %s",
-                    tid,
-                    _truncate(_safe_json(diag.get("raw") or diag), _dbg_limit()),
-                )
+    # 🔥 КРИТИЧНО: проверяем внутренний RESULT
+    inner = res.get("result") or {}
+    data = inner.get("DATA") or {}
+    results = data.get("RESULT") or []
 
-    else:
-        logger.warning("[%s] OpenLines send OK: %s", tid, _truncate(_safe_json(res.get("result")), 800))
+    if results and isinstance(results, list):
+        first = results[0]
+        if not first.get("SUCCESS"):
+            logger.error(
+                "[%s] OpenLines rejected message: %s",
+                tid,
+                _truncate(_safe_json(first), _dbg_limit()),
+            )
+            return {
+                "success": False,
+                "error": "IMCONNECTOR_MESSAGE_FAILED",
+                "raw": first,
+            }
 
-    return res
+    logger.warning("[%s] OpenLines send OK", tid)
+    return {"success": True}
