@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
 import logging
+import time
+import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -10,104 +14,6 @@ from app.core.config import config
 from app.infrastructure.external.bitrix_oauth import BitrixOAuthService
 
 logger = logging.getLogger(__name__)
-
-
-class BitrixWebhookClient:
-
-    def __init__(self, webhook_url: str):
-        self.base = (webhook_url or "").rstrip("/")
-        self.session: Optional[aiohttp.ClientSession] = None
-
-    async def __aenter__(self) -> "BitrixWebhookClient":
-        self.session = aiohttp.ClientSession()
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb) -> None:
-        if self.session:
-            await self.session.close()
-
-    async def post(self, method: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        if not self.base:
-            return {"success": False, "error": "BITRIX24_WEBHOOK_URL is empty"}
-        if not self.session:
-            raise RuntimeError("BitrixWebhookClient session is not initialized")
-
-        url = f"{self.base}/{method}"
-
-        try:
-            async with self.session.post(url, json=payload) as resp:
-                data = await resp.json(content_type=None)
-        except Exception as e:
-            logger.exception("Bitrix webhook request failed: %s %s", method, e)
-            return {"success": False, "error": f"Request failed: {e}"}
-
-        if isinstance(data, dict) and data.get("error"):
-            logger.error("Bitrix webhook error (%s): %s", method, data)
-            return {
-                "success": False,
-                "error": data.get("error"),
-                "error_description": data.get("error_description"),
-                "raw": data,
-            }
-
-        return {"success": True, "result": data.get("result") if isinstance(data, dict) else data}
-
-
-class BitrixOAuthRestClient:
-
-    def __init__(self, portal: str, oauth: BitrixOAuthService):
-        self.portal = (portal or "").strip()
-        self.oauth = oauth
-        self.session: Optional[aiohttp.ClientSession] = None
-
-    async def __aenter__(self) -> "BitrixOAuthRestClient":
-        self.session = aiohttp.ClientSession()
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb) -> None:
-        if self.session:
-            await self.session.close()
-
-    def _base_url(self) -> str:
-        if not self.portal:
-            return ""
-        if self.portal.startswith("http://") or self.portal.startswith("https://"):
-            return self.portal.rstrip("/")
-        return f"https://{self.portal}".rstrip("/")
-
-    async def post(self, method: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        if not self.session:
-            raise RuntimeError("BitrixOAuthRestClient session is not initialized")
-
-        base = self._base_url()
-        if not base:
-            return {"success": False, "error": "BITRIX24_PORTAL is empty (required for OAuth mode)"}
-
-        token = await self.oauth.get_access_token()
-        if not token:
-            return {"success": False, "error": "OAuth token is missing (install app / obtain tokens first)"}
-
-        url = f"{base}/rest/{method}.json"
-        body = dict(payload)
-        body.setdefault("auth", token)
-
-        try:
-            async with self.session.post(url, json=body) as resp:
-                data = await resp.json(content_type=None)
-        except Exception as e:
-            logger.exception("Bitrix OAuth request failed: %s %s", method, e)
-            return {"success": False, "error": f"Request failed: {e}"}
-
-        if isinstance(data, dict) and data.get("error"):
-            logger.error("Bitrix OAuth error (%s): %s", method, data)
-            return {
-                "success": False,
-                "error": data.get("error"),
-                "error_description": data.get("error_description"),
-                "raw": data,
-            }
-
-        return {"success": True, "result": data.get("result") if isinstance(data, dict) else data}
 
 
 def _is_enabled() -> bool:
@@ -138,18 +44,234 @@ def _openlines_connector_id() -> str:
     return str(getattr(config, "BITRIX24_CONNECTOR_ID", "") or "").strip()
 
 
-async def _post_bitrix(method: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def _dbg() -> bool:
+    return bool(getattr(config, "BITRIX24_DEBUG", False)) and not bool(getattr(config, "is_production", False))
+
+
+def _dbg_limit() -> int:
+    try:
+        return int(getattr(config, "BITRIX24_DEBUG_HTTP_BODY_LIMIT", 4000) or 4000)
+    except Exception:
+        return 4000
+
+
+def _truncate(s: str, limit: int) -> str:
+    if s is None:
+        return ""
+    s = str(s)
+    if len(s) <= limit:
+        return s
+    return s[:limit] + f"...(truncated, len={len(s)})"
+
+
+def _safe_json(obj: Any) -> str:
+    try:
+        return json.dumps(obj, ensure_ascii=False, default=str)
+    except Exception:
+        return str(obj)
+
+
+def _mask_webhook_url(url: str) -> str:
+    if not url:
+        return ""
+    try:
+        p = urlparse(url)
+        host = p.netloc or p.path.split("/")[0]
+        return f"{p.scheme}://{host}/rest/***/***"
+    except Exception:
+        return "***"
+
+
+def _safe_base_info() -> Dict[str, Any]:
+    mode = "oauth" if _use_oauth() else "webhook"
+    portal = _portal()
+    webhook = _webhook_url()
+    return {
+        "mode": mode,
+        "portal": portal if portal else "",
+        "webhook": _mask_webhook_url(webhook) if webhook else "",
+    }
+
+
+def _safe_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {"_payload": str(payload)}
+    p = dict(payload)
+    if "auth" in p:
+        p["auth"] = "***"
+    return p
+
+
+async def _read_response_body(resp: aiohttp.ClientResponse) -> Any:
+    try:
+        return await resp.json(content_type=None)
+    except Exception:
+        try:
+            return await resp.text()
+        except Exception:
+            return "<unreadable response body>"
+
+
+class BitrixWebhookClient:
+    def __init__(self, webhook_url: str):
+        self.base = (webhook_url or "").rstrip("/")
+        self.session: Optional[aiohttp.ClientSession] = None
+
+    async def __aenter__(self) -> "BitrixWebhookClient":
+        self.session = aiohttp.ClientSession()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        if self.session:
+            await self.session.close()
+
+    async def post(self, method: str, payload: Dict[str, Any], *, trace_id: str) -> Dict[str, Any]:
+        if not self.base:
+            return {"success": False, "error": "BITRIX24_WEBHOOK_URL is empty"}
+        if not self.session:
+            raise RuntimeError("BitrixWebhookClient session is not initialized")
+
+        url = f"{self.base}/{method}"
+        t0 = time.perf_counter()
+
+        if _dbg():
+            logger.warning(
+                "[%s] Bitrix webhook POST %s payload=%s base=%s",
+                trace_id,
+                method,
+                _truncate(_safe_json(_safe_payload(payload)), _dbg_limit()),
+                _mask_webhook_url(self.base),
+            )
+
+        try:
+            async with self.session.post(url, json=payload) as resp:
+                data = await _read_response_body(resp)
+                elapsed_ms = int((time.perf_counter() - t0) * 1000)
+
+                if _dbg():
+                    logger.warning(
+                        "[%s] Bitrix webhook RESP %s status=%s ms=%s body=%s",
+                        trace_id,
+                        method,
+                        resp.status,
+                        elapsed_ms,
+                        _truncate(_safe_json(data), _dbg_limit()),
+                    )
+
+        except Exception as e:
+            logger.exception("[%s] Bitrix webhook request failed: %s %s", trace_id, method, e)
+            return {"success": False, "error": f"Request failed: {e}"}
+
+        if isinstance(data, dict) and data.get("error"):
+            logger.error("[%s] Bitrix webhook error (%s): %s", trace_id, method, data)
+            return {
+                "success": False,
+                "error": data.get("error"),
+                "error_description": data.get("error_description"),
+                "raw": data,
+            }
+
+        return {"success": True, "result": data.get("result") if isinstance(data, dict) else data}
+
+
+class BitrixOAuthRestClient:
+    def __init__(self, portal: str, oauth: BitrixOAuthService):
+        self.portal = (portal or "").strip()
+        self.oauth = oauth
+        self.session: Optional[aiohttp.ClientSession] = None
+
+    async def __aenter__(self) -> "BitrixOAuthRestClient":
+        self.session = aiohttp.ClientSession()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        if self.session:
+            await self.session.close()
+
+    def _base_url(self) -> str:
+        if not self.portal:
+            return ""
+        if self.portal.startswith("http://") or self.portal.startswith("https://"):
+            return self.portal.rstrip("/")
+        return f"https://{self.portal}".rstrip("/")
+
+    async def post(self, method: str, payload: Dict[str, Any], *, trace_id: str) -> Dict[str, Any]:
+        if not self.session:
+            raise RuntimeError("BitrixOAuthRestClient session is not initialized")
+
+        base = self._base_url()
+        if not base:
+            return {"success": False, "error": "BITRIX24_PORTAL is empty (required for OAuth mode)"}
+
+        token = await self.oauth.get_access_token()
+        if not token:
+            return {"success": False, "error": "OAuth token is missing (install app / obtain tokens first)"}
+
+        url = f"{base}/rest/{method}.json"
+        body = dict(payload)
+        body.setdefault("auth", token)
+
+        t0 = time.perf_counter()
+
+        if _dbg():
+            logger.warning(
+                "[%s] Bitrix oauth POST %s url=%s payload=%s base=%s",
+                trace_id,
+                method,
+                url,
+                _truncate(_safe_json(_safe_payload(body)), _dbg_limit()),
+                base,
+            )
+
+        try:
+            async with self.session.post(url, json=body) as resp:
+                data = await _read_response_body(resp)
+                elapsed_ms = int((time.perf_counter() - t0) * 1000)
+
+                if _dbg():
+                    logger.warning(
+                        "[%s] Bitrix oauth RESP %s status=%s ms=%s body=%s",
+                        trace_id,
+                        method,
+                        resp.status,
+                        elapsed_ms,
+                        _truncate(_safe_json(data), _dbg_limit()),
+                    )
+
+        except Exception as e:
+            logger.exception("[%s] Bitrix OAuth request failed: %s %s", trace_id, method, e)
+            return {"success": False, "error": f"Request failed: {e}"}
+
+        if isinstance(data, dict) and data.get("error"):
+            logger.error("[%s] Bitrix OAuth error (%s): %s", trace_id, method, data)
+            return {
+                "success": False,
+                "error": data.get("error"),
+                "error_description": data.get("error_description"),
+                "raw": data,
+            }
+
+        return {"success": True, "result": data.get("result") if isinstance(data, dict) else data}
+
+
+async def _post_bitrix(method: str, payload: Dict[str, Any], *, trace_id: Optional[str] = None) -> Dict[str, Any]:
+    tid = trace_id or uuid.uuid4().hex[:12]
+
+    if _dbg():
+        logger.warning("[%s] Bitrix call: method=%s base=%s", tid, method, _safe_base_info())
 
     if _use_oauth():
         oauth = BitrixOAuthService()
         async with BitrixOAuthRestClient(_portal(), oauth) as bx:
-            return await bx.post(method, payload)
+            return await bx.post(method, payload, trace_id=tid)
 
     async with BitrixWebhookClient(_webhook_url()) as bx:
-        return await bx.post(method, payload)
+        return await bx.post(method, payload, trace_id=tid)
 
 
-async def ensure_bitrix_lead(lead_obj: Any, fields: Dict[str, Any]) -> Dict[str, Any]:
+async def ensure_bitrix_lead(lead_obj: Any, fields: Dict[str, Any], *, trace_id: Optional[str] = None) -> Dict[str, Any]:
+    tid = trace_id or uuid.uuid4().hex[:12]
+
     if not _is_enabled():
         return {"success": False, "error": "BITRIX24_ENABLED=false"}
 
@@ -166,18 +288,26 @@ async def ensure_bitrix_lead(lead_obj: Any, fields: Dict[str, Any]) -> Dict[str,
 
     fields.setdefault("OPENED", "Y")
     fields.setdefault("STATUS_ID", "NEW")
-
     fields.setdefault("timestamp", datetime.now().isoformat())
+
+    if _dbg():
+        logger.warning(
+            "[%s] ensure_bitrix_lead: has_lead_id=%s lead_id=%s fields=%s",
+            tid,
+            bool(bitrix_lead_id),
+            bitrix_lead_id,
+            _truncate(_safe_json(fields), _dbg_limit()),
+        )
 
     if bitrix_lead_id:
         payload = {"id": int(bitrix_lead_id), "fields": fields}
-        res = await _post_bitrix("crm.lead.update", payload)
+        res = await _post_bitrix("crm.lead.update", payload, trace_id=tid)
         if res.get("success"):
             return {"success": True, "lead_id": int(bitrix_lead_id), "created": False}
         return res
 
     payload = {"fields": fields}
-    res = await _post_bitrix("crm.lead.add", payload)
+    res = await _post_bitrix("crm.lead.add", payload, trace_id=tid)
     if res.get("success"):
         try:
             new_id = int(res["result"])
@@ -196,11 +326,10 @@ async def send_message_to_openlines(
     text: str,
     message_id: str,
     unix_date: int,
+    trace_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Отправка сообщения в Открытую линию через коннектор.
-    В OAuth-режиме это обязательно (иначе WRONG_AUTH_TYPE).
-    """
+    tid = trace_id or uuid.uuid4().hex[:12]
+
     if not _is_enabled():
         return {"success": False, "error": "BITRIX24_ENABLED=false"}
 
@@ -224,33 +353,59 @@ async def send_message_to_openlines(
 
     user_display = f"@{tg_username}" if tg_username else str(tg_user_id)
 
+    msg: Dict[str, Any] = {
+        "user": {"id": str(tg_user_id), "name": user_display},
+        "message": {"id": str(message_id), "date": int(unix_date), "text": text},
+        "chat": {"id": str(tg_user_id), "name": f"Telegram {tg_user_id}"},
+    }
+    if int(lead_id) > 0:
+        msg["crm"] = {"lead": int(lead_id)}
+
     payload = {
         "CONNECTOR": connector,
         "LINE": line,
-        "MESSAGES": [
-            {
-                "user": {"id": str(tg_user_id), "name": user_display},
-                "message": {"id": str(message_id), "date": int(unix_date), "text": text},
-                "chat": {"id": str(tg_user_id), "name": f"Telegram {tg_user_id}"},
-                "crm": {"lead": int(lead_id)} if int(lead_id) > 0 else {},
-            }
-        ],
+        "MESSAGES": [msg],
     }
 
-    logger.info(
-        "📨 OpenLines send: mode=%s connector=%s line=%s tg_user_id=%s msg_id=%s",
+    logger.warning(
+        "[%s] OpenLines send: mode=%s connector=%s line=%s tg_user_id=%s msg_id=%s lead_id=%s crm_included=%s",
+        tid,
         "oauth" if _use_oauth() else "webhook",
         connector,
         line,
         tg_user_id,
         message_id,
+        lead_id,
+        "crm" in msg,
     )
 
-    res = await _post_bitrix("imconnector.send.messages", payload)
+    res = await _post_bitrix("imconnector.send.messages", payload, trace_id=tid)
 
     if not res.get("success"):
-        logger.warning("⚠️ OpenLines send failed: %s %s", res.get("error"), res.get("error_description"))
+        logger.warning(
+            "[%s] OpenLines send failed: error=%s desc=%s raw=%s",
+            tid,
+            res.get("error"),
+            res.get("error_description"),
+            _truncate(_safe_json(res.get("raw") or res), _dbg_limit()),
+        )
+
+        if str(res.get("error")) == "NOT_ACTIVE_LINE":
+            diag = await _post_bitrix("imopenlines.config.get", {"CONFIG_ID": line}, trace_id=tid + "L")
+            if diag.get("success"):
+                logger.warning(
+                    "[%s] NOT_ACTIVE_LINE diag config.get OK: %s",
+                    tid,
+                    _truncate(_safe_json(diag.get("result")), _dbg_limit()),
+                )
+            else:
+                logger.warning(
+                    "[%s] NOT_ACTIVE_LINE diag config.get FAILED: %s",
+                    tid,
+                    _truncate(_safe_json(diag.get("raw") or diag), _dbg_limit()),
+                )
+
     else:
-        logger.info("✅ OpenLines send OK: %s", str(res.get("result"))[:200])
+        logger.warning("[%s] OpenLines send OK: %s", tid, _truncate(_safe_json(res.get("result")), 800))
 
     return res
