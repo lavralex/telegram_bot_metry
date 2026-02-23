@@ -1,3 +1,4 @@
+import asyncio
 import aiohttp
 import logging
 from dataclasses import dataclass
@@ -120,6 +121,8 @@ class BitrixOAuthStorage:
 
 
 class BitrixOAuthService:
+    _refresh_lock = asyncio.Lock()
+
     def __init__(self):
         self.storage = BitrixOAuthStorage()
 
@@ -189,44 +192,53 @@ class BitrixOAuthService:
 
         logger.info("🔄 Bitrix OAuth: обновляем access_token по refresh_token...")
 
-        payload = {
-            "grant_type": "refresh_token",
-            "client_id": config.BITRIX24_CLIENT_ID,
-            "client_secret": config.BITRIX24_CLIENT_SECRET,
-            "refresh_token": token.refresh_token,
-        }
 
-        timeout = aiohttp.ClientTimeout(total=20)
+        async with self._refresh_lock:
+            # После ожидания лока перечитаем токен — возможно, другой воркер уже обновил его
+            token2 = self.storage.load()
+            if token2 and not self._is_expiring(token2.expires_at):
+                return token2.access_token
+            if token2:
+                token = token2
 
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(OAUTH_TOKEN_URL, data=payload) as resp:
-                status = resp.status
-                try:
-                    data = await resp.json(content_type=None)
-                except Exception:
-                    text = await resp.text()
-                    raise RuntimeError(f"Bitrix token refresh non-JSON: {status}: {text[:300]}")
+            payload = {
+                "grant_type": "refresh_token",
+                "client_id": config.BITRIX24_CLIENT_ID,
+                "client_secret": config.BITRIX24_CLIENT_SECRET,
+                "refresh_token": token.refresh_token,
+            }
 
-        if _dbg():
-            safe = dict(data) if isinstance(data, dict) else {"_": str(data)}
-            if isinstance(safe, dict):
-                if "access_token" in safe:
-                    safe["access_token"] = "***"
-                if "refresh_token" in safe:
-                    safe["refresh_token"] = "***"
-            logger.warning("BitrixOAuth refresh response: status=%s data=%s", status, safe)
+            timeout = aiohttp.ClientTimeout(total=20)
 
-        if not isinstance(data, dict) or "access_token" not in data:
-            raise RuntimeError(f"Bitrix token refresh failed: {data}")
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(OAUTH_TOKEN_URL, data=payload) as resp:
+                    status = resp.status
+                    try:
+                        data = await resp.json(content_type=None)
+                    except Exception:
+                        text = await resp.text()
+                        raise RuntimeError(f"Bitrix token refresh non-JSON: {status}: {text[:300]}")
 
-        expires_in = int(data.get("expires_in", 3600))
-        new_token = OAuthToken(
-            access_token=data["access_token"],
-            refresh_token=data.get("refresh_token", token.refresh_token),
-            expires_at=self._now_utc() + timedelta(seconds=expires_in),
-        )
+            if _dbg():
+                safe = dict(data) if isinstance(data, dict) else {"_": str(data)}
+                if isinstance(safe, dict):
+                    if "access_token" in safe:
+                        safe["access_token"] = "***"
+                    if "refresh_token" in safe:
+                        safe["refresh_token"] = "***"
+                logger.warning("BitrixOAuth refresh response: status=%s data=%s", status, safe)
 
-        self.storage.save(new_token)
-        logger.info("✅ Bitrix OAuth: access_token обновлен, expires_in=%s", expires_in)
+            if not isinstance(data, dict) or "access_token" not in data:
+                raise RuntimeError(f"Bitrix token refresh failed: {data}")
 
-        return new_token.access_token
+            expires_in = int(data.get("expires_in", 3600))
+            new_token = OAuthToken(
+                access_token=data["access_token"],
+                refresh_token=data.get("refresh_token", token.refresh_token),
+                expires_at=self._now_utc() + timedelta(seconds=expires_in),
+            )
+
+            self.storage.save(new_token)
+            logger.info("✅ Bitrix OAuth: access_token обновлен, expires_in=%s", expires_in)
+
+            return new_token.access_token

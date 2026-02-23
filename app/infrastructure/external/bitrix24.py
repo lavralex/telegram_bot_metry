@@ -336,10 +336,15 @@ async def ensure_event_bound(*, event_name: str, handler_url: str, trace_id: Opt
         logger.info("[%s] event already bound: %s -> %s", tid, event_name, handler_url)
         return {"success": True, "bound": True, "already": True}
 
-    bind_payload = {"EVENT_NAME": event_name, "HANDLER": handler_url}
+    bind_payload = {"EVENT": event_name, "HANDLER": handler_url}
     bind_res = await _post_bitrix("event.bind", bind_payload, trace_id=tid)
     if not bind_res.get("success"):
-        return bind_res
+        # Некоторые порталы ждут EVENT_NAME вместо EVENT
+        bind_payload2 = {"EVENT_NAME": event_name, "HANDLER": handler_url}
+        bind_res2 = await _post_bitrix("event.bind", bind_payload2, trace_id=tid)
+        if not bind_res2.get("success"):
+            return bind_res
+        bind_res = bind_res2
 
     logger.info("[%s] event bound: %s -> %s", tid, event_name, handler_url)
     return {"success": True, "bound": True, "already": False, "raw": bind_res.get("result")}
