@@ -31,6 +31,7 @@ from app.application.services.broadcast_service import (
 )
 
 from app.infrastructure.external.bitrix_http_server import create_app
+from app.infrastructure.external.bitrix_oauth import BitrixOAuthService
 
 
 async def shutdown():
@@ -39,6 +40,32 @@ async def shutdown():
     logger.info("🛑 Завершение работы бота...")
     await stop_broadcast_scheduler()
     logger.info("✅ Все задачи завершены")
+
+
+async def _try_bootstrap_bitrix(logger: logging.Logger) -> None:
+    """
+    Не блокирует старт бота.
+    Если OAuth уже настроен (токены есть) — пробуем довести интеграцию до готовности.
+    """
+    if not config.BITRIX24_ENABLED:
+        return
+    if not bool(getattr(config, "BITRIX24_USE_OAUTH", False)):
+        return
+
+    await asyncio.sleep(1.0)
+
+    try:
+        oauth = BitrixOAuthService()
+        token = oauth.storage.load()
+        if not token:
+            logger.info("ℹ️ Bitrix bootstrap skipped: OAuth tokens not found yet (install app first)")
+            return
+
+        from app.infrastructure.external.bitrix24 import ensure_bitrix_ready
+        res = await ensure_bitrix_ready()
+        logger.info("✅ Bitrix bootstrap on startup: %s", str(res)[:1200])
+    except Exception as e:
+        logger.error("Bitrix bootstrap on startup failed: %s", e, exc_info=True)
 
 
 async def main():
@@ -103,6 +130,8 @@ async def main():
         http_server_task = asyncio.create_task(server.serve())
 
         logger.info("✅ FastAPI Bitrix server запущен на http://127.0.0.1:8090")
+
+        asyncio.create_task(_try_bootstrap_bitrix(logger))
     else:
         logger.info("ℹ️ FastAPI Bitrix server выключен")
 

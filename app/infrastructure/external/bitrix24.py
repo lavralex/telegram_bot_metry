@@ -44,6 +44,14 @@ def _openlines_connector_id() -> str:
     return str(getattr(config, "BITRIX24_CONNECTOR_ID", "") or "").strip()
 
 
+def _public_base_url() -> str:
+    return str(getattr(config, "PUBLIC_BASE_URL", "") or "").rstrip("/")
+
+
+def _connector_name() -> str:
+    return str(getattr(config, "BITRIX24_CONNECTOR_NAME", "") or "Metri Telegram Bot").strip()
+
+
 def _dbg() -> bool:
     return bool(getattr(config, "BITRIX24_DEBUG", False)) and not bool(getattr(config, "is_production", False))
 
@@ -269,6 +277,151 @@ async def _post_bitrix(method: str, payload: Dict[str, Any], *, trace_id: Option
         return await bx.post(method, payload, trace_id=tid)
 
 
+async def ensure_event_bound(*, event_name: str, handler_url: str, trace_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Идемпотентно гарантирует подписку на событие.
+    Управляет "Bitrix -> наш endpoint" (например OnImConnectorMessageAdd).
+    """
+    tid = trace_id or uuid.uuid4().hex[:12]
+
+    if not _is_enabled():
+        return {"success": False, "error": "BITRIX24_ENABLED=false"}
+
+    if not _use_oauth():
+        return {"success": False, "error": "BITRIX24_USE_OAUTH=false (events require OAuth app context)"}
+
+    handler_url = (handler_url or "").strip()
+    if not handler_url:
+        return {"success": False, "error": "handler_url is empty"}
+
+    res = await _post_bitrix("event.get", {}, trace_id=tid)
+    if not res.get("success"):
+        return res
+
+    current = res.get("result") or {}
+    existing = current.get(event_name)
+
+    existing_handlers = []
+    if isinstance(existing, str):
+        existing_handlers = [existing]
+    elif isinstance(existing, list):
+        existing_handlers = [str(x) for x in existing]
+    elif existing is None:
+        existing_handlers = []
+    else:
+        existing_handlers = [str(existing)]
+
+    if any(h.rstrip("/") == handler_url.rstrip("/") for h in existing_handlers):
+        logger.info("[%s] event already bound: %s -> %s", tid, event_name, handler_url)
+        return {"success": True, "bound": True, "already": True}
+
+    bind_payload = {"EVENT_NAME": event_name, "HANDLER": handler_url}
+    bind_res = await _post_bitrix("event.bind", bind_payload, trace_id=tid)
+    if not bind_res.get("success"):
+        return bind_res
+
+    logger.info("[%s] event bound: %s -> %s", tid, event_name, handler_url)
+    return {"success": True, "bound": True, "already": False, "raw": bind_res.get("result")}
+
+
+async def ensure_connector_ready(*, trace_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Идемпотентная проверка/доведение до готовности:
+      - проверяем imopenlines.config.list (для удобства диагностики)
+      - проверяем imconnector.status для (CONNECTOR, LINE)
+      - если статус плохой -> imconnector.register -> imconnector.activate -> повторная проверка
+
+    Важное ограничение: некоторые порталы всё равно могут требовать включить канал в UI.
+    Но тогда status покажет причину — и ты будешь видеть её в логах и /bitrix/diag.
+    """
+    tid = trace_id or uuid.uuid4().hex[:12]
+
+    if not _is_enabled():
+        return {"success": False, "error": "BITRIX24_ENABLED=false"}
+    if not _use_oauth():
+        return {"success": False, "error": "BITRIX24_USE_OAUTH=false (connector setup requires OAuth)"}
+
+    connector = _openlines_connector_id()
+    line = _openlines_line_id()
+    base = _public_base_url()
+
+    if not connector:
+        return {"success": False, "error": "BITRIX24_CONNECTOR_ID is empty"}
+    if not line:
+        return {"success": False, "error": "BITRIX24_OPENLINE_ID is empty"}
+    if not base:
+        return {"success": False, "error": "PUBLIC_BASE_URL is empty (required for register placement handler)"}
+
+    steps: Dict[str, Any] = {"connector": connector, "line": line, "base": base, "steps": []}
+
+    try:
+        ol = await _post_bitrix("imopenlines.config.list", {"select": ["ID", "NAME", "ACTIVE"]}, trace_id=tid)
+        steps["steps"].append({"imopenlines.config.list": ol})
+    except Exception as e:
+        steps["steps"].append({"imopenlines.config.list": {"success": False, "error": str(e)}})
+
+    status = await _post_bitrix("imconnector.status", {"CONNECTOR": connector, "LINE": line}, trace_id=tid)
+    steps["steps"].append({"imconnector.status": status})
+
+    need_register = False
+    need_activate = False
+
+    if not status.get("success"):
+        need_register = True
+        need_activate = True
+    else:
+        st = status.get("result") or {}
+        if isinstance(st, dict) and st.get("ACTIVE") in ("N", "n", False, 0, "0", None, ""):
+            need_activate = True
+
+    if need_register:
+        reg_payload = {
+            "ID": connector,
+            "NAME": _connector_name(),
+            "PLACEMENT_HANDLER": f"{base}/bitrix/install",
+        }
+        reg = await _post_bitrix("imconnector.register", reg_payload, trace_id=tid)
+        steps["steps"].append({"imconnector.register": reg})
+
+    if need_activate:
+        act_payload = {
+            "CONNECTOR": connector,
+            "LINE": line,
+            "ACTIVE": "Y",
+        }
+        act = await _post_bitrix("imconnector.activate", act_payload, trace_id=tid)
+        steps["steps"].append({"imconnector.activate": act})
+
+    status2 = await _post_bitrix("imconnector.status", {"CONNECTOR": connector, "LINE": line}, trace_id=tid)
+    steps["steps"].append({"imconnector.status.after": status2})
+
+    ok = bool(status2.get("success"))
+    return {"success": ok, "details": steps}
+
+
+async def ensure_bitrix_ready(*, trace_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Полная идемпотентная подготовка для двусторонних чатов:
+      1) ensure_connector_ready()
+      2) ensure_event_bound(OnImConnectorMessageAdd -> /bitrix/events)
+    """
+    tid = trace_id or uuid.uuid4().hex[:12]
+
+    if not _is_enabled():
+        return {"success": False, "error": "BITRIX24_ENABLED=false"}
+
+    base = _public_base_url()
+    if not base:
+        return {"success": False, "error": "PUBLIC_BASE_URL is empty"}
+
+    handler = f"{base}/bitrix/events"
+
+    conn = await ensure_connector_ready(trace_id=tid)
+    ev = await ensure_event_bound(event_name="OnImConnectorMessageAdd", handler_url=handler, trace_id=tid)
+
+    return {"success": bool(conn.get("success") and ev.get("success")), "connector": conn, "event": ev}
+
+
 async def ensure_bitrix_lead(lead_obj: Any, fields: Dict[str, Any], *, trace_id: Optional[str] = None) -> Dict[str, Any]:
     tid = trace_id or uuid.uuid4().hex[:12]
 
@@ -399,7 +552,6 @@ async def send_message_to_openlines(
         )
         return res
 
-    # 🔥 КРИТИЧНО: проверяем внутренний RESULT
     inner = res.get("result") or {}
     data = inner.get("DATA") or {}
     results = data.get("RESULT") or []

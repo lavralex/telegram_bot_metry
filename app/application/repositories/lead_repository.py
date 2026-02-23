@@ -64,17 +64,29 @@ class LeadRepository:
         if not lead:
             return None
 
-        def _fill_if_empty(attr: str, value: Any) -> None:
-            if value is None:
+        def _non_empty(v: Any) -> bool:
+            if v is None:
+                return False
+            if isinstance(v, str) and not v.strip():
+                return False
+            return True
+
+        def _set_if_present(attr: str, value: Any) -> None:
+            """Обновлять поле, если в state пришло непустое значение."""
+            if not _non_empty(value):
                 return
-            if isinstance(value, str) and not value.strip():
+            setattr(lead, attr, value)
+
+        def _fill_if_empty(attr: str, value: Any) -> None:
+            """Заполнить поле только если оно ещё пустое (не перетирать существующее)."""
+            if not _non_empty(value):
                 return
             current = getattr(lead, attr, None)
             if current is None or (isinstance(current, str) and not current.strip()):
                 setattr(lead, attr, value)
 
-        _fill_if_empty("segment", state_data.get("segment"))
-        _fill_if_empty("utm_source", state_data.get("utm_source"))
+        _set_if_present("utm_source", state_data.get("utm_source"))
+        _set_if_present("segment", state_data.get("segment"))
 
         _fill_if_empty("budget", state_data.get("budget"))
         _fill_if_empty("timeline", state_data.get("timeline"))

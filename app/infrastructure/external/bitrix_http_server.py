@@ -4,9 +4,11 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
+import urllib.parse
 from datetime import timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 from fastapi import FastAPI, Request
@@ -67,11 +69,22 @@ def _is_from_our_connector(msg: Dict[str, Any], expected: str) -> bool:
 def _extract_user_id_from_chat_id(chat_id: Any) -> Optional[int]:
     if isinstance(chat_id, int):
         return chat_id
-    if isinstance(chat_id, str):
-        if chat_id.startswith("tg_") and chat_id[3:].isdigit():
-            return int(chat_id[3:])
-        if chat_id.isdigit():
-            return int(chat_id)
+    if not isinstance(chat_id, str):
+        return None
+
+    s = chat_id.strip()
+    if s.startswith("tg_") and s[3:].isdigit():
+        return int(s[3:])
+    if s.isdigit():
+        return int(s)
+
+    m = re.search(r"(\d{5,})\s*$", s)
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            return None
+
     return None
 
 
@@ -110,6 +123,64 @@ async def _send_to_tg(bot, user_id: int, out_text: str, trace: str) -> None:
         logger.error("[%s] [BITRIX->TG] send failed user_id=%s err=%s", trace, user_id, e, exc_info=True)
 
 
+def _try_json_loads(s: str) -> dict:
+    try:
+        obj = json.loads(s)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
+async def _parse_bitrix_event_payload(request: Request) -> Dict[str, Any]:
+    ct = (request.headers.get("content-type") or "").lower()
+
+    if "application/json" in ct:
+        try:
+            p = await request.json()
+            return p if isinstance(p, dict) else {}
+        except Exception:
+            return {}
+
+    if "application/x-www-form-urlencoded" in ct or "multipart/form-data" in ct:
+        try:
+            form = await request.form()
+            data: Dict[str, Any] = dict(form)
+
+            raw_data = data.get("data") or data.get("DATA")
+            if isinstance(raw_data, str):
+                inner = _try_json_loads(raw_data)
+                if inner:
+                    data["data"] = inner
+
+            return data
+        except Exception:
+            return {}
+
+    try:
+        raw = (await request.body()).decode("utf-8", errors="ignore").strip()
+        if not raw:
+            return {}
+
+        if "=" in raw and "&" in raw and not raw.lstrip().startswith("{"):
+            parsed = urllib.parse.parse_qs(raw, keep_blank_values=True)
+            flat = {k: (v[0] if isinstance(v, list) and v else "") for k, v in parsed.items()}
+            raw_data = flat.get("data") or flat.get("DATA")
+            if isinstance(raw_data, str):
+                inner = _try_json_loads(raw_data)
+                if inner:
+                    flat["data"] = inner
+            return flat
+
+        p = _try_json_loads(raw)
+        return p if p else {}
+    except Exception:
+        return {}
+
+
+def _public_base_url() -> str:
+    return str(getattr(config, "PUBLIC_BASE_URL", "") or "").rstrip("/")
+
+
 def create_app(bot) -> FastAPI:
     app = FastAPI()
     expected_connector = _expected_connector()
@@ -117,6 +188,42 @@ def create_app(bot) -> FastAPI:
     @app.get("/health")
     async def health():
         return {"ok": True}
+
+    @app.get("/bitrix/diag")
+    async def bitrix_diag():
+        """
+        Диагностика: подписки + состояние коннектора/линии.
+        """
+        try:
+            from app.infrastructure.external.bitrix24 import _post_bitrix, ensure_bitrix_ready
+
+            res_event = await _post_bitrix("event.get", {})
+            res_status = await _post_bitrix(
+                "imconnector.status",
+                {"CONNECTOR": getattr(config, "BITRIX24_CONNECTOR_ID", ""), "LINE": getattr(config, "BITRIX24_OPENLINE_ID", "")},
+            )
+
+            return {
+                "ok": True,
+                "event_get": res_event,
+                "imconnector_status": res_status,
+                "hint": "call /bitrix/diag after OAuth install to see bindings",
+                "ensure_ready_example": "POST /bitrix/ensure-ready",
+            }
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    @app.post("/bitrix/ensure-ready")
+    async def bitrix_ensure_ready():
+        """
+        Принудительно дернуть ensure_bitrix_ready (удобно для диагностики).
+        """
+        try:
+            from app.infrastructure.external.bitrix24 import ensure_bitrix_ready
+            res = await ensure_bitrix_ready()
+            return {"ok": True, "result": res}
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
     @app.api_route("/bitrix/install", methods=["GET", "POST"])
     async def bitrix_install(request: Request):
@@ -179,23 +286,21 @@ def create_app(bot) -> FastAPI:
         oauth.storage.save(token)
 
         logger.info("✅ OAuth tokens saved. expires_in=%s", expires_in)
+
+        try:
+            from app.infrastructure.external.bitrix24 import ensure_bitrix_ready
+            res = await ensure_bitrix_ready()
+            logger.info("✅ ensure_bitrix_ready result: %s", str(res)[:1200])
+        except Exception as e:
+            logger.error("ensure_bitrix_ready failed: %s", e, exc_info=True)
+
         return {"ok": True, "saved": True}
 
     @app.post("/bitrix/events")
     async def bitrix_events(request: Request):
         trace = request.headers.get("X-Request-Id") or os.urandom(6).hex()
 
-        payload: Dict[str, Any] = {}
-        try:
-            payload = await request.json()
-        except Exception:
-            try:
-                raw = (await request.body()).decode("utf-8", errors="ignore").strip()
-                if raw.startswith("'") and raw.endswith("'"):
-                    raw = raw[1:-1].strip()
-                payload = json.loads(raw) if raw else {}
-            except Exception:
-                payload = {}
+        payload: Dict[str, Any] = await _parse_bitrix_event_payload(request)
 
         event = (
             payload.get("event")
@@ -205,7 +310,13 @@ def create_app(bot) -> FastAPI:
         )
         event = (str(event) if event is not None else "").strip()
 
-        logger.info("[%s] [BITRIX EVENT] event=%s", trace, event)
+        logger.info(
+            "[%s] [BITRIX EVENT] ct=%s event=%s keys=%s",
+            trace,
+            (request.headers.get("content-type") or ""),
+            event,
+            list(payload.keys())[:25],
+        )
 
         if event.lower() != "onimconnectormessageadd":
             return PlainTextResponse("OK", status_code=200)

@@ -143,21 +143,13 @@ async def process_contact_all(message: Message, state: FSMContext):
 
     try:
         user_repo.mark_contact_shared(message.from_user.id, phone)
-        lead_obj = (
-            lead_repo.db.query(Lead)
-            .filter(Lead.user_id == message.from_user.id)
-            .order_by(desc(Lead.created_at))
-            .first()
-        )
+        
+        lead_obj, _ = lead_service.create_new_lead_from_state(user_info, user_data)
+        logger.info("✅ (CONTACT) Новый лид создан в БД с ID: %s", lead_obj.id)
 
-        if lead_obj:
-            logger.info("ℹ️ Найден существующий лид в БД: %s. Обогащаем телефоном/путём.", lead_obj.id)
-            lead_obj = lead_repo.update_lead_from_state(lead_obj.id, user_data) or lead_obj
-        else:
-            lead_obj, _ = lead_service.create_lead_from_state(user_info, user_data)
-            logger.info("✅ Лид создан в БД с ID: %s", lead_obj.id)
         bitrix_fields = build_bitrix_fields_from_lead(lead_obj)
         user_repo.mark_lead_created(message.from_user.id)
+
 
     except Exception as e:
         logger.error("❌ Ошибка обработки контакта: %s", e, exc_info=True)

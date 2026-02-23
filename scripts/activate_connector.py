@@ -6,7 +6,7 @@ async def main():
         "imconnector.activate",
         {
             "CONNECTOR": "telegram_bot",
-            "LINE": "133",  # ← твой ID линии
+            "LINE": "133",
             "ACTIVE": "Y",
         },
     )
