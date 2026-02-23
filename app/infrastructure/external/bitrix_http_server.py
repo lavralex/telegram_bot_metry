@@ -296,8 +296,11 @@ def create_app(bot) -> FastAPI:
 
         return {"ok": True, "saved": True}
 
-    @app.post("/bitrix/events")
+    @app.api_route("/bitrix/events", methods=["GET", "POST"])
     async def bitrix_events(request: Request):
+        if request.method == "GET":
+            return PlainTextResponse("OK", status_code=200)
+
         trace = request.headers.get("X-Request-Id") or os.urandom(6).hex()
 
         payload: Dict[str, Any] = await _parse_bitrix_event_payload(request)

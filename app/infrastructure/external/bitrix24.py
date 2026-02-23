@@ -339,12 +339,13 @@ async def ensure_event_bound(*, event_name: str, handler_url: str, trace_id: Opt
     bind_payload = {"EVENT": event_name, "HANDLER": handler_url}
     bind_res = await _post_bitrix("event.bind", bind_payload, trace_id=tid)
     if not bind_res.get("success"):
-        # Некоторые порталы ждут EVENT_NAME вместо EVENT
-        bind_payload2 = {"EVENT_NAME": event_name, "HANDLER": handler_url}
-        bind_res2 = await _post_bitrix("event.bind", bind_payload2, trace_id=tid)
-        if not bind_res2.get("success"):
-            return bind_res
-        bind_res = bind_res2
+        # Bitrix иногда возвращает "Handler already binded" как ошибку — считаем это успехом
+        raw_err = (bind_res.get("raw") or {}) if isinstance(bind_res.get("raw"), dict) else {}
+        descr = str(bind_res.get("error_description") or raw_err.get("error_description") or "")
+        if "already binded" in descr.lower() or "already bound" in descr.lower():
+            logger.info("[%s] event already bound (by error): %s -> %s", tid, event_name, handler_url)
+            return {"success": True, "bound": True, "already": True}
+        return bind_res
 
     logger.info("[%s] event bound: %s -> %s", tid, event_name, handler_url)
     return {"success": True, "bound": True, "already": False, "raw": bind_res.get("result")}
