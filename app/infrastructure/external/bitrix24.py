@@ -281,6 +281,7 @@ async def ensure_event_bound(*, event_name: str, handler_url: str, trace_id: Opt
     """
     Идемпотентно гарантирует подписку на событие.
     Управляет "Bitrix -> наш endpoint" (например OnImConnectorMessageAdd).
+    Учитывает, что event.get может вернуть dict ИЛИ list.
     """
     tid = trace_id or uuid.uuid4().hex[:12]
 
@@ -298,18 +299,38 @@ async def ensure_event_bound(*, event_name: str, handler_url: str, trace_id: Opt
     if not res.get("success"):
         return res
 
-    current = res.get("result") or {}
-    existing = current.get(event_name)
+    raw = res.get("result")
 
     existing_handlers = []
-    if isinstance(existing, str):
-        existing_handlers = [existing]
-    elif isinstance(existing, list):
-        existing_handlers = [str(x) for x in existing]
-    elif existing is None:
-        existing_handlers = []
-    else:
-        existing_handlers = [str(existing)]
+
+    # 🔥 Главное исправление
+    if isinstance(raw, dict):
+        existing = raw.get(event_name)
+        if isinstance(existing, str):
+            existing_handlers = [existing]
+        elif isinstance(existing, list):
+            existing_handlers = [str(x) for x in existing]
+        elif existing:
+            existing_handlers = [str(existing)]
+
+    elif isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            en = (
+                item.get("eventName")
+                or item.get("EVENT_NAME")
+                or item.get("event_name")
+                or item.get("EVENT")
+            )
+            hd = (
+                item.get("handler")
+                or item.get("HANDLER")
+                or item.get("handler_url")
+                or item.get("HANDLER_URL")
+            )
+            if str(en or "").strip() == event_name and hd:
+                existing_handlers.append(str(hd))
 
     if any(h.rstrip("/") == handler_url.rstrip("/") for h in existing_handlers):
         logger.info("[%s] event already bound: %s -> %s", tid, event_name, handler_url)
@@ -330,9 +351,6 @@ async def ensure_connector_ready(*, trace_id: Optional[str] = None) -> Dict[str,
       - проверяем imopenlines.config.list (для удобства диагностики)
       - проверяем imconnector.status для (CONNECTOR, LINE)
       - если статус плохой -> imconnector.register -> imconnector.activate -> повторная проверка
-
-    Важное ограничение: некоторые порталы всё равно могут требовать включить канал в UI.
-    Но тогда status покажет причину — и ты будешь видеть её в логах и /bitrix/diag.
     """
     tid = trace_id or uuid.uuid4().hex[:12]
 
