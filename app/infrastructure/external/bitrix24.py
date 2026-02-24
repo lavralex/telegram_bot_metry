@@ -610,8 +610,16 @@ async def enrich_openlines_lead(
     if not lookup.get("success"):
         return lookup
 
+    upd_fields = dict(fields or {})
+    source_id = _lead_source_id()
+    if source_id and "SOURCE_ID" not in upd_fields:
+        upd_fields["SOURCE_ID"] = source_id
+    upd_fields.setdefault("OPENED", "Y")
+    upd_fields.setdefault("STATUS_ID", "NEW")
+    upd_fields.setdefault("timestamp", datetime.now().isoformat())
+
     lead_id = int(lookup["lead_id"])
-    upd = await _post_bitrix("crm.lead.update", {"id": lead_id, "fields": fields}, trace_id=tid + "U")
+    upd = await _post_bitrix("crm.lead.update", {"id": lead_id, "fields": upd_fields}, trace_id=tid + "U")
     if not upd.get("success"):
         return upd
     return {"success": True, "lead_id": lead_id, "updated": True, "raw": upd.get("result")}

@@ -183,6 +183,7 @@ class UserMessageMiddleware(BaseMiddleware):
                         message_id=str(message.message_id),
                         unix_date=int(message.date.timestamp()),
                         attach_crm=not ol_owns_lead,
+                        chat_token=(f"lead_{lead.id}" if ol_owns_lead and lead_id_for_ol <= 0 else ""),
                         trace_id=trace_id + "O",
                     )
 
