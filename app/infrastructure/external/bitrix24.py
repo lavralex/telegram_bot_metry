@@ -556,6 +556,8 @@ async def send_message_to_openlines(
 
     if int(lead_id) > 0:
         msg["crm"] = {"lead": int(lead_id)}
+        # Some Bitrix portals/connectors expect crm_entity format for binding.
+        msg["crm_entity"] = f"L_{int(lead_id)}"
 
     payload = {
         "CONNECTOR": connector,

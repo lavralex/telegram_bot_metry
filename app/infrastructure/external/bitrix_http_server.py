@@ -88,9 +88,25 @@ def _extract_user_id_from_chat_id(chat_id: Any) -> Optional[int]:
 
 
 def _extract_messages(payload: dict) -> List[Dict[str, Any]]:
-    data = payload.get("data") or {}
-    msgs = data.get("MESSAGES") or data.get("messages") or []
-    return msgs if isinstance(msgs, list) else []
+    candidates: List[Any] = []
+
+    data = payload.get("data")
+    if data is not None:
+        candidates.append(data)
+
+    data_u = payload.get("DATA")
+    if data_u is not None:
+        candidates.append(data_u)
+
+    for c in candidates:
+        if isinstance(c, list):
+            return [x for x in c if isinstance(x, dict)]
+        if isinstance(c, dict):
+            msgs = c.get("MESSAGES") or c.get("messages")
+            if isinstance(msgs, list):
+                return [x for x in msgs if isinstance(x, dict)]
+
+    return []
 
 
 def _extract_text(msg: dict) -> str:
@@ -130,6 +146,82 @@ def _try_json_loads(s: str) -> dict:
         return {}
 
 
+def _split_bracket_key(key: str) -> List[str]:
+    parts: List[str] = []
+    cur = ""
+    i = 0
+    while i < len(key):
+        ch = key[i]
+        if ch == "[":
+            if cur:
+                parts.append(cur)
+                cur = ""
+            j = key.find("]", i + 1)
+            if j == -1:
+                break
+            parts.append(key[i + 1 : j])
+            i = j + 1
+            continue
+        cur += ch
+        i += 1
+    if cur:
+        parts.append(cur)
+    return [p for p in parts if p != ""]
+
+
+def _inflate_bracket_form(flat: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Converts keys like data[MESSAGES][0][message][text] into nested dict/list.
+    """
+    root: Dict[str, Any] = {}
+
+    def _ensure_list_size(lst: List[Any], idx: int) -> None:
+        while len(lst) <= idx:
+            lst.append(None)
+
+    for k, v in flat.items():
+        if "[" not in k or "]" not in k:
+            continue
+        path = _split_bracket_key(k)
+        if not path:
+            continue
+
+        cur: Any = root
+        for i, part in enumerate(path):
+            last = i == len(path) - 1
+            next_part = path[i + 1] if not last else None
+            is_index = part.isdigit()
+
+            if is_index:
+                idx = int(part)
+                if not isinstance(cur, list):
+                    break
+                _ensure_list_size(cur, idx)
+                if last:
+                    cur[idx] = v
+                else:
+                    child = cur[idx]
+                    if child is None:
+                        child = [] if (next_part and next_part.isdigit()) else {}
+                        cur[idx] = child
+                    cur = child
+                continue
+
+            if not isinstance(cur, dict):
+                break
+
+            if last:
+                cur[part] = v
+            else:
+                child = cur.get(part)
+                if child is None:
+                    child = [] if (next_part and next_part.isdigit()) else {}
+                    cur[part] = child
+                cur = child
+
+    return root
+
+
 async def _parse_bitrix_event_payload(request: Request) -> Dict[str, Any]:
     ct = (request.headers.get("content-type") or "").lower()
 
@@ -150,6 +242,13 @@ async def _parse_bitrix_event_payload(request: Request) -> Dict[str, Any]:
                 inner = _try_json_loads(raw_data)
                 if inner:
                     data["data"] = inner
+
+            inflated = _inflate_bracket_form(data)
+            if inflated:
+                # Merge parsed nested structure without losing original flat keys.
+                for kk, vv in inflated.items():
+                    if kk not in data:
+                        data[kk] = vv
 
             return data
         except Exception:
