@@ -59,6 +59,13 @@ def _build_openlines_chat_id(*, tg_user_id: int, lead_id: int) -> str:
     return f"tg_u{int(tg_user_id)}"
 
 
+def _build_openlines_user_id(*, tg_user_id: int, lead_id: int) -> str:
+    # Many portals key dialogs by user.id, so it must also be lead-scoped.
+    if int(lead_id) > 0:
+        return f"tg_u{int(tg_user_id)}_l{int(lead_id)}"
+    return f"tg_u{int(tg_user_id)}"
+
+
 def _dbg() -> bool:
     return bool(getattr(config, "BITRIX24_DEBUG", False)) and not bool(getattr(config, "is_production", False))
 
@@ -565,11 +572,12 @@ async def send_message_to_openlines(
         return {"success": False, "error": "BITRIX24_CONNECTOR_ID (CONNECTOR) is empty"}
 
     user_display = f"@{tg_username}" if tg_username else f"Telegram {tg_user_id}"
+    user_id = _build_openlines_user_id(tg_user_id=tg_user_id, lead_id=lead_id)
     chat_id = _build_openlines_chat_id(tg_user_id=tg_user_id, lead_id=lead_id)
 
     msg: Dict[str, Any] = {
         "user": {
-            "id": str(tg_user_id),
+            "id": user_id,
             "name": user_display,
             "url": f"https://t.me/{tg_username}" if tg_username else f"https://t.me/{tg_user_id}",
         },
