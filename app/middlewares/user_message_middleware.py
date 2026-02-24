@@ -165,23 +165,27 @@ class UserMessageMiddleware(BaseMiddleware):
                 seg = state_data.get("segment") or getattr(lead, "segment", None) or "unknown"
                 utm = state_data.get("utm_source") or getattr(lead, "utm_source", None) or "organic"
                 prefix = f"[segment={seg}, utm={utm}] "
+                lead_id_for_ol = int(getattr(lead, "bitrix_lead_id", 0) or 0)
 
-                ol_res = await send_message_to_openlines(
-                    lead_id=int(getattr(lead, "bitrix_lead_id", 0) or 0),
-                    tg_user_id=user_id,
-                    tg_username=message.from_user.username or "",
-                    text=prefix + message_text,
-                    message_id=str(message.message_id),
-                    unix_date=int(message.date.timestamp()),
-                    trace_id=trace_id + "O",
-                )
-
-                if not ol_res.get("success"):
-                    ol_error = str(ol_res.get("error") or "unknown error")
-                    logger.warning("[%s] OpenLines send failed: %s", trace_id, ol_error)
+                if lead_id_for_ol <= 0:
+                    logger.warning("[%s] Skip OpenLines send: missing bitrix_lead_id for local lead_id=%s", trace_id, lead.id)
                 else:
-                    ol_sent_ok = True
-                    logger.info("[%s] OpenLines send OK", trace_id)
+                    ol_res = await send_message_to_openlines(
+                        lead_id=lead_id_for_ol,
+                        tg_user_id=user_id,
+                        tg_username=message.from_user.username or "",
+                        text=prefix + message_text,
+                        message_id=str(message.message_id),
+                        unix_date=int(message.date.timestamp()),
+                        trace_id=trace_id + "O",
+                    )
+
+                    if not ol_res.get("success"):
+                        ol_error = str(ol_res.get("error") or "unknown error")
+                        logger.warning("[%s] OpenLines send failed: %s", trace_id, ol_error)
+                    else:
+                        ol_sent_ok = True
+                        logger.info("[%s] OpenLines send OK", trace_id)
 
         except Exception as e:
             ol_error = str(e)

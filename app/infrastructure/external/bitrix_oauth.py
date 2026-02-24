@@ -1,16 +1,26 @@
-import asyncio
-import aiohttp
+from __future__ import annotations
+
 import logging
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
+import aiohttp
+from sqlalchemy.exc import IntegrityError
+
+from app.application.repositories.bitrix_oauth_token_repository import BitrixOAuthTokenRepository
 from app.core.config import config
 from app.core.database import SessionLocal
+from app.infrastructure.database.models import BotUser
 
 logger = logging.getLogger(__name__)
 
 OAUTH_TOKEN_URL = getattr(config, "BITRIX24_OAUTH_TOKEN_URL", "https://oauth.bitrix.info/oauth/token/")
+
+_INIT_LOCK = threading.Lock()
+_INIT_DONE_PORTALS: set[str] = set()
 
 
 def _dbg() -> bool:
@@ -26,6 +36,22 @@ def _mask(s: Optional[str]) -> str:
     return f"{s[:4]}...{s[-4:]}"
 
 
+def _normalize_portal(portal: str) -> str:
+    raw = (portal or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("http://") or raw.startswith("https://"):
+        p = urlparse(raw)
+        return (p.netloc or "").strip().lower()
+    return raw.rstrip("/").lower()
+
+
+def _utc(v: datetime) -> datetime:
+    if v.tzinfo is None:
+        return v.replace(tzinfo=timezone.utc)
+    return v.astimezone(timezone.utc)
+
+
 @dataclass
 class OAuthToken:
     access_token: str
@@ -33,212 +59,282 @@ class OAuthToken:
     expires_at: datetime
 
 
-class BitrixOAuthStorage:
-    """
-    Хранилище токенов в БД.
-    Храним на "техническом пользователе" user_id=0 в bot_users.user_metadata.
-    """
-
-    def load(self) -> Optional[OAuthToken]:
-        db = SessionLocal()
-        try:
-            from app.infrastructure.database.models import BotUser
-
-            row = db.query(BotUser).filter(BotUser.user_id == 0).first()
-            if not row or not row.user_metadata:
-                if _dbg():
-                    logger.warning("BitrixOAuthStorage.load: no system BotUser or empty metadata")
-                return None
-
-            meta = row.user_metadata
-            tok = meta.get("bitrix_oauth")
-            if not tok:
-                if _dbg():
-                    logger.warning("BitrixOAuthStorage.load: no bitrix_oauth key in metadata")
-                return None
-
-            expires_at = datetime.fromisoformat(tok["expires_at"])
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
-            else:
-                expires_at = expires_at.astimezone(timezone.utc)
-
-            access = tok.get("access_token") or ""
-            refresh = tok.get("refresh_token") or ""
-
-            if _dbg():
-                logger.warning(
-                    "BitrixOAuthStorage.load: loaded token from DB user_id=0 expires_at=%s access=%s refresh=%s",
-                    expires_at.isoformat(),
-                    _mask(access),
-                    _mask(refresh),
-                )
-
-            if not access or not refresh:
-                return None
-
-            return OAuthToken(
-                access_token=access,
-                refresh_token=refresh,
-                expires_at=expires_at,
-            )
-        finally:
-            db.close()
-
-    def save(self, token: OAuthToken) -> None:
-        db = SessionLocal()
-        try:
-            from app.infrastructure.database.models import BotUser
-
-            row = db.query(BotUser).filter(BotUser.user_id == 0).first()
-            created = False
-            if not row:
-                row = BotUser(user_id=0, username="system", first_name="System", last_name="OAuth")
-                db.add(row)
-                db.commit()
-                db.refresh(row)
-                created = True
-
-            meta = row.user_metadata or {}
-            meta["bitrix_oauth"] = {
-                "access_token": token.access_token,
-                "refresh_token": token.refresh_token,
-                "expires_at": token.expires_at.astimezone(timezone.utc).isoformat(),
-            }
-            row.user_metadata = meta
-            db.commit()
-
-            if _dbg():
-                logger.warning(
-                    "BitrixOAuthStorage.save: saved token to DB user_id=0 created=%s expires_at=%s access=%s refresh=%s",
-                    created,
-                    token.expires_at.astimezone(timezone.utc).isoformat(),
-                    _mask(token.access_token),
-                    _mask(token.refresh_token),
-                )
-        finally:
-            db.close()
+class OAuthReauthRequired(RuntimeError):
+    pass
 
 
 class BitrixOAuthService:
-    _refresh_lock = asyncio.Lock()
-
-    def __init__(self):
-        self.storage = BitrixOAuthStorage()
+    def __init__(self, portal: Optional[str] = None):
+        self.portal = _normalize_portal(portal or getattr(config, "BITRIX24_PORTAL", ""))
 
     @staticmethod
     def _now_utc() -> datetime:
         return datetime.now(timezone.utc)
 
     @staticmethod
-    def _is_expiring(expires_at: datetime, skew_seconds: int = 120) -> bool:
-        return expires_at <= (BitrixOAuthService._now_utc() + timedelta(seconds=skew_seconds))
+    def _is_expiring(expires_at: Optional[datetime], skew_seconds: int = 180) -> bool:
+        if not expires_at:
+            return True
+        return _utc(expires_at) <= (BitrixOAuthService._now_utc() + timedelta(seconds=skew_seconds))
 
-    def _bootstrap_from_env_if_needed(self) -> Optional[OAuthToken]:
-        access = getattr(config, "BITRIX24_OAUTH_ACCESS_TOKEN", None)
-        refresh = getattr(config, "BITRIX24_OAUTH_REFRESH_TOKEN", None)
+    @staticmethod
+    def _is_invalid_refresh_error(err: str, desc: str) -> bool:
+        e = (err or "").lower()
+        d = (desc or "").lower()
+        needles = (
+            "invalid_grant",
+            "invalid_refresh",
+            "expired",
+            "refresh token",
+            "token has expired",
+        )
+        return any(n in e or n in d for n in needles)
 
-        if not access or not refresh:
-            if _dbg():
-                logger.warning("BitrixOAuth bootstrap: no env tokens present")
+    def _require_portal(self) -> str:
+        if not self.portal:
+            raise RuntimeError("BITRIX24_PORTAL is empty for OAuth mode")
+        return self.portal
+
+    def _legacy_token_from_bot_user(self, db) -> Optional[OAuthToken]:
+        row = db.query(BotUser).filter(BotUser.user_id == 0).first()
+        if not row or not row.user_metadata:
             return None
+        tok = (row.user_metadata or {}).get("bitrix_oauth")
+        if not isinstance(tok, dict):
+            return None
+        access = str(tok.get("access_token") or "").strip()
+        refresh = str(tok.get("refresh_token") or "").strip()
+        expires_raw = tok.get("expires_at")
+        if not access or not refresh or not expires_raw:
+            return None
+        try:
+            expires_at = _utc(datetime.fromisoformat(str(expires_raw)))
+        except Exception:
+            return None
+        return OAuthToken(access_token=access, refresh_token=refresh, expires_at=expires_at)
 
-        default_expires_in = int(getattr(config, "BITRIX24_OAUTH_EXPIRES_IN", 3600))
-        token = OAuthToken(
-            access_token=str(access),
-            refresh_token=str(refresh),
-            expires_at=self._now_utc() + timedelta(seconds=default_expires_in),
+    def _token_from_env(self) -> Optional[OAuthToken]:
+        access = str(getattr(config, "BITRIX24_OAUTH_ACCESS_TOKEN", "") or "").strip()
+        refresh = str(getattr(config, "BITRIX24_OAUTH_REFRESH_TOKEN", "") or "").strip()
+        if not access or not refresh:
+            return None
+        expires_in = int(getattr(config, "BITRIX24_OAUTH_EXPIRES_IN", 3600) or 3600)
+        return OAuthToken(
+            access_token=access,
+            refresh_token=refresh,
+            expires_at=self._now_utc() + timedelta(seconds=expires_in),
         )
 
-        self.storage.save(token)
+    def _migrate_legacy_once(self) -> None:
+        portal = self._require_portal()
 
-        logger.info("✅ Bitrix OAuth bootstrap: токены загружены из env и сохранены в БД")
+        with _INIT_LOCK:
+            if portal in _INIT_DONE_PORTALS:
+                return
+
+        db = SessionLocal()
+        try:
+            repo = BitrixOAuthTokenRepository(db)
+            existing = repo.get_by_portal(portal)
+            if existing:
+                with _INIT_LOCK:
+                    _INIT_DONE_PORTALS.add(portal)
+                return
+
+            migrated = self._legacy_token_from_bot_user(db) or self._token_from_env()
+
+            if migrated:
+                with db.begin():
+                    repo.upsert_tokens(
+                        portal=portal,
+                        access_token=migrated.access_token,
+                        refresh_token=migrated.refresh_token,
+                        expires_at=migrated.expires_at,
+                    )
+                logger.info(
+                    "Bitrix OAuth tokens migrated to dedicated table (portal=%s, expires_at=%s)",
+                    portal,
+                    migrated.expires_at.isoformat(),
+                )
+            else:
+                with db.begin():
+                    repo.create_if_missing(portal)
+                logger.info("Bitrix OAuth token row initialized (portal=%s, no tokens yet)", portal)
+
+            with _INIT_LOCK:
+                _INIT_DONE_PORTALS.add(portal)
+
+        except IntegrityError:
+            db.rollback()
+            with _INIT_LOCK:
+                _INIT_DONE_PORTALS.add(portal)
+        finally:
+            db.close()
+
+    def save_oauth_tokens(self, *, access_token: str, refresh_token: str, expires_in: int) -> None:
+        portal = self._require_portal()
+        expires_at = self._now_utc() + timedelta(seconds=int(expires_in or 3600))
+
+        db = SessionLocal()
+        try:
+            repo = BitrixOAuthTokenRepository(db)
+            with db.begin():
+                repo.upsert_tokens(
+                    portal=portal,
+                    access_token=str(access_token),
+                    refresh_token=str(refresh_token),
+                    expires_at=expires_at,
+                )
+            with _INIT_LOCK:
+                _INIT_DONE_PORTALS.add(portal)
+        finally:
+            db.close()
+
+    def get_token_state(self) -> Dict[str, Any]:
+        portal = self._require_portal()
+        self._migrate_legacy_once()
+
+        db = SessionLocal()
+        try:
+            repo = BitrixOAuthTokenRepository(db)
+            row = repo.get_by_portal(portal)
+            if not row:
+                return {
+                    "portal": portal,
+                    "token_present": False,
+                    "refresh_present": False,
+                    "is_valid": False,
+                    "expires_at": None,
+                    "seconds_left": None,
+                    "version": None,
+                }
+
+            expires_at = _utc(row.expires_at) if row.expires_at else None
+            seconds_left = int((expires_at - self._now_utc()).total_seconds()) if expires_at else None
+
+            return {
+                "portal": row.portal,
+                "token_present": bool(row.access_token),
+                "refresh_present": bool(row.refresh_token),
+                "is_valid": bool(row.is_valid),
+                "expires_at": expires_at.isoformat() if expires_at else None,
+                "seconds_left": seconds_left,
+                "version": int(row.version or 0),
+            }
+        finally:
+            db.close()
+
+    def has_valid_token(self) -> bool:
+        st = self.get_token_state()
+        return bool(st.get("token_present") and st.get("refresh_present") and st.get("is_valid"))
+
+    async def _refresh_request(self, *, refresh_token: str) -> Dict[str, Any]:
+        payload = {
+            "grant_type": "refresh_token",
+            "client_id": getattr(config, "BITRIX24_CLIENT_ID", ""),
+            "client_secret": getattr(config, "BITRIX24_CLIENT_SECRET", ""),
+            "refresh_token": refresh_token,
+        }
+
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(OAUTH_TOKEN_URL, data=payload) as resp:
+                status = resp.status
+                try:
+                    data = await resp.json(content_type=None)
+                except Exception:
+                    text = await resp.text()
+                    raise RuntimeError(f"Bitrix token refresh non-JSON: {status}: {text[:300]}")
+
         if _dbg():
-            logger.warning(
-                "BitrixOAuth bootstrap details: expires_in=%s expires_at=%s access=%s refresh=%s",
-                default_expires_in,
-                token.expires_at.isoformat(),
-                _mask(token.access_token),
-                _mask(token.refresh_token),
-            )
+            safe = dict(data) if isinstance(data, dict) else {"_": str(data)}
+            if isinstance(safe, dict):
+                if "access_token" in safe:
+                    safe["access_token"] = "***"
+                if "refresh_token" in safe:
+                    safe["refresh_token"] = "***"
+            logger.warning("BitrixOAuth refresh response: status=%s data=%s", status, safe)
 
-        return token
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Bitrix token refresh failed: unexpected response: {type(data).__name__}")
+
+        if data.get("error"):
+            err = str(data.get("error") or "")
+            desc = str(data.get("error_description") or "")
+            if self._is_invalid_refresh_error(err, desc):
+                raise OAuthReauthRequired("Bitrix OAuth refresh token is invalid/expired. Reinstall app.")
+            raise RuntimeError(f"Bitrix token refresh failed: {err}: {desc}")
+
+        if "access_token" not in data:
+            raise RuntimeError(f"Bitrix token refresh failed: {data}")
+
+        return data
 
     async def get_access_token(self) -> str:
-        token = self.storage.load()
+        portal = self._require_portal()
+        self._migrate_legacy_once()
 
-        if not token:
-            token = self._bootstrap_from_env_if_needed()
+        for _ in range(2):
+            db = SessionLocal()
+            try:
+                repo = BitrixOAuthTokenRepository(db)
+                with db.begin():
+                    row = repo.get_by_portal_for_update(portal)
+                    if not row:
+                        try:
+                            repo.create_if_missing(portal)
+                            row = repo.get_by_portal_for_update(portal)
+                        except IntegrityError:
+                            raise
 
-        if not token:
-            raise RuntimeError(
-                "Bitrix OAuth токены не инициализированы. "
-                "Нужно задать BITRIX24_OAUTH_ACCESS_TOKEN / BITRIX24_OAUTH_REFRESH_TOKEN "
-                "или пройти OAuth и сохранить токены."
-            )
+                    if not row:
+                        raise RuntimeError("Bitrix OAuth token row is missing")
 
-        if _dbg():
-            logger.warning(
-                "BitrixOAuth get_access_token: expires_at=%s expiring=%s portal=%s token_url=%s client_id=%s",
-                token.expires_at.isoformat(),
-                self._is_expiring(token.expires_at),
-                getattr(config, "BITRIX24_PORTAL", ""),
-                OAUTH_TOKEN_URL,
-                _mask(getattr(config, "BITRIX24_CLIENT_ID", "")),
-            )
+                    if not bool(row.is_valid):
+                        raise OAuthReauthRequired("Bitrix OAuth tokens are invalid. Reinstall app.")
 
-        if not self._is_expiring(token.expires_at):
-            return token.access_token
+                    if not row.refresh_token:
+                        raise OAuthReauthRequired("Bitrix OAuth refresh_token is missing. Reinstall app.")
 
-        logger.info("🔄 Bitrix OAuth: обновляем access_token по refresh_token...")
+                    if row.access_token and not self._is_expiring(row.expires_at):
+                        return row.access_token
 
+                    logger.info(
+                        "Bitrix OAuth token refresh started (portal=%s, expires_at=%s, version=%s)",
+                        portal,
+                        _utc(row.expires_at).isoformat() if row.expires_at else None,
+                        row.version,
+                    )
 
-        async with self._refresh_lock:
-            # После ожидания лока перечитаем токен — возможно, другой воркер уже обновил его
-            token2 = self.storage.load()
-            if token2 and not self._is_expiring(token2.expires_at):
-                return token2.access_token
-            if token2:
-                token = token2
-
-            payload = {
-                "grant_type": "refresh_token",
-                "client_id": config.BITRIX24_CLIENT_ID,
-                "client_secret": config.BITRIX24_CLIENT_SECRET,
-                "refresh_token": token.refresh_token,
-            }
-
-            timeout = aiohttp.ClientTimeout(total=20)
-
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(OAUTH_TOKEN_URL, data=payload) as resp:
-                    status = resp.status
                     try:
-                        data = await resp.json(content_type=None)
-                    except Exception:
-                        text = await resp.text()
-                        raise RuntimeError(f"Bitrix token refresh non-JSON: {status}: {text[:300]}")
+                        data = await self._refresh_request(refresh_token=row.refresh_token)
+                    except OAuthReauthRequired:
+                        repo.invalidate(row)
+                        logger.error("Bitrix OAuth requires reauthorization (portal=%s)", portal)
+                        raise
 
-            if _dbg():
-                safe = dict(data) if isinstance(data, dict) else {"_": str(data)}
-                if isinstance(safe, dict):
-                    if "access_token" in safe:
-                        safe["access_token"] = "***"
-                    if "refresh_token" in safe:
-                        safe["refresh_token"] = "***"
-                logger.warning("BitrixOAuth refresh response: status=%s data=%s", status, safe)
+                    expires_in = int(data.get("expires_in", 3600))
+                    new_access = str(data["access_token"])
+                    new_refresh = str(data.get("refresh_token") or row.refresh_token)
+                    new_expires = self._now_utc() + timedelta(seconds=expires_in)
 
-            if not isinstance(data, dict) or "access_token" not in data:
-                raise RuntimeError(f"Bitrix token refresh failed: {data}")
+                    repo.upsert_tokens(
+                        portal=portal,
+                        access_token=new_access,
+                        refresh_token=new_refresh,
+                        expires_at=new_expires,
+                    )
+                    logger.info(
+                        "Bitrix OAuth token refreshed (portal=%s, expires_in=%s, version=%s)",
+                        portal,
+                        expires_in,
+                        row.version,
+                    )
+                    return new_access
+            except IntegrityError:
+                db.rollback()
+                continue
+            finally:
+                db.close()
 
-            expires_in = int(data.get("expires_in", 3600))
-            new_token = OAuthToken(
-                access_token=data["access_token"],
-                refresh_token=data.get("refresh_token", token.refresh_token),
-                expires_at=self._now_utc() + timedelta(seconds=expires_in),
-            )
-
-            self.storage.save(new_token)
-            logger.info("✅ Bitrix OAuth: access_token обновлен, expires_in=%s", expires_in)
-
-            return new_token.access_token
+        raise RuntimeError("Bitrix OAuth token row contention. Retry request.")

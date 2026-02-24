@@ -42,6 +42,7 @@ def check_and_create_tables() -> None:
             "broadcasts",
             "subscribers",
             "user_messages",
+            "bitrix_oauth_tokens",
         }
 
         missing_tables = sorted(list(required_tables - existing_tables))

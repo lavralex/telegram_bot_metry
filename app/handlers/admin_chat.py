@@ -134,15 +134,19 @@ async def process_reply_text(message: Message, state: FSMContext):
                 seg = getattr(lead, "segment", None) if lead else None
                 utm = getattr(lead, "utm_source", None) if lead else None
                 prefix = f"[admin_reply][segment={seg or 'unknown'}, utm={utm or 'organic'}] "
+                lead_id_for_ol = int(bitrix_lead_id) if bitrix_lead_id else 0
 
-                await send_message_to_openlines(
-                    lead_id=int(bitrix_lead_id) if bitrix_lead_id else 0,
-                    tg_user_id=int(user_id),
-                    tg_username=(lead.username if lead and lead.username else ""),
-                    text=prefix + text,
-                    message_id=f"admin_{db_message.id}",
-                    unix_date=int(message.date.timestamp()),
-                )
+                if lead_id_for_ol <= 0:
+                    logger.warning("⚠️ Skip OpenLines send (admin reply): missing bitrix_lead_id for user_id=%s", user_id)
+                else:
+                    await send_message_to_openlines(
+                        lead_id=lead_id_for_ol,
+                        tg_user_id=int(user_id),
+                        tg_username=(lead.username if lead and lead.username else ""),
+                        text=prefix + text,
+                        message_id=f"admin_{db_message.id}",
+                        unix_date=int(message.date.timestamp()),
+                    )
             except Exception as e:
                 logger.warning("⚠️ Не удалось продублировать ответ в OpenLines: %s", e)
 

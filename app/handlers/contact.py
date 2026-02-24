@@ -192,14 +192,17 @@ async def process_contact_all(message: Message, state: FSMContext):
             utm = user_data.get("utm_source") or getattr(lead_obj, "utm_source", None) or "organic"
             prefix = f"[segment={seg}, utm={utm}] "
 
-            await send_message_to_openlines(
-                lead_id=lead_id_for_ol,
-                tg_user_id=message.from_user.id,
-                tg_username=message.from_user.username or "",
-                text=prefix + f"📞 Пользователь оставил телефон: {phone}",
-                message_id=f"contact_{message.message_id}",
-                unix_date=int(message.date.timestamp()),
-            )
+            if lead_id_for_ol <= 0:
+                logger.warning("⚠️ Skip OpenLines send: missing bitrix_lead_id for local lead_id=%s", getattr(lead_obj, "id", None))
+            else:
+                await send_message_to_openlines(
+                    lead_id=lead_id_for_ol,
+                    tg_user_id=message.from_user.id,
+                    tg_username=message.from_user.username or "",
+                    text=prefix + f"📞 Пользователь оставил телефон: {phone}",
+                    message_id=f"contact_{message.message_id}",
+                    unix_date=int(message.date.timestamp()),
+                )
         except Exception as e:
             logger.warning("⚠️ Не удалось отправить сообщение в OpenLines: %s", e)
 

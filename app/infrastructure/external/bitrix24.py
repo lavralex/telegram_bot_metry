@@ -269,12 +269,20 @@ async def _post_bitrix(method: str, payload: Dict[str, Any], *, trace_id: Option
         logger.warning("[%s] Bitrix call: method=%s base=%s", tid, method, _safe_base_info())
 
     if _use_oauth():
-        oauth = BitrixOAuthService()
-        async with BitrixOAuthRestClient(_portal(), oauth) as bx:
-            return await bx.post(method, payload, trace_id=tid)
+        try:
+            oauth = BitrixOAuthService()
+            async with BitrixOAuthRestClient(_portal(), oauth) as bx:
+                return await bx.post(method, payload, trace_id=tid)
+        except Exception as e:
+            logger.exception("[%s] Bitrix OAuth call failed: %s %s", tid, method, e)
+            return {"success": False, "error": str(e)}
 
-    async with BitrixWebhookClient(_webhook_url()) as bx:
-        return await bx.post(method, payload, trace_id=tid)
+    try:
+        async with BitrixWebhookClient(_webhook_url()) as bx:
+            return await bx.post(method, payload, trace_id=tid)
+    except Exception as e:
+        logger.exception("[%s] Bitrix webhook call failed: %s %s", tid, method, e)
+        return {"success": False, "error": str(e)}
 
 
 async def ensure_event_bound(*, event_name: str, handler_url: str, trace_id: Optional[str] = None) -> Dict[str, Any]:
@@ -416,10 +424,16 @@ async def ensure_bitrix_ready(*, trace_id: Optional[str] = None) -> Dict[str, An
 
     handler = f"{base}/bitrix/events"
 
+    app_info = await _post_bitrix("app.info", {}, trace_id=tid)
     conn = await ensure_connector_ready(trace_id=tid)
     ev = await ensure_event_bound(event_name="OnImConnectorMessageAdd", handler_url=handler, trace_id=tid)
 
-    return {"success": bool(conn.get("success") and ev.get("success")), "connector": conn, "event": ev}
+    return {
+        "success": bool(app_info.get("success") and conn.get("success") and ev.get("success")),
+        "app_info": app_info,
+        "connector": conn,
+        "event": ev,
+    }
 
 
 async def ensure_bitrix_lead(lead_obj: Any, fields: Dict[str, Any], *, trace_id: Optional[str] = None) -> Dict[str, Any]:
@@ -552,13 +566,27 @@ async def send_message_to_openlines(
         )
         return res
 
-    inner = res.get("result") or {}
-    data = inner.get("DATA") or {}
-    results = data.get("RESULT") or []
+    inner = res.get("result")
 
-    if results and isinstance(results, list):
-        first = results[0]
-        if not first.get("SUCCESS"):
+    # Bitrix may return heterogeneous response shapes for this endpoint.
+    # Consider only explicit success markers as success; everything else is treated as a failure.
+    if isinstance(inner, bool):
+        if inner is True:
+            logger.warning("[%s] OpenLines send OK (bool result)", tid)
+            return {"success": True}
+        logger.error("[%s] OpenLines rejected message: result=false", tid)
+        return {"success": False, "error": "IMCONNECTOR_MESSAGE_FAILED", "raw": res}
+
+    if isinstance(inner, dict):
+        data = inner.get("DATA") or {}
+        results = data.get("RESULT") or []
+
+        if isinstance(results, list) and results:
+            first = results[0] if isinstance(results[0], dict) else {"raw": results[0]}
+            if first.get("SUCCESS") is True:
+                logger.warning("[%s] OpenLines send OK (DATA.RESULT)", tid)
+                return {"success": True}
+
             logger.error(
                 "[%s] OpenLines rejected message: %s",
                 tid,
@@ -570,5 +598,13 @@ async def send_message_to_openlines(
                 "raw": first,
             }
 
-    logger.warning("[%s] OpenLines send OK", tid)
-    return {"success": True}
+        if inner.get("SUCCESS") is True:
+            logger.warning("[%s] OpenLines send OK (SUCCESS)", tid)
+            return {"success": True}
+
+        if "SUCCESS" in inner and inner.get("SUCCESS") is not True:
+            logger.error("[%s] OpenLines rejected message: %s", tid, _truncate(_safe_json(inner), _dbg_limit()))
+            return {"success": False, "error": "IMCONNECTOR_MESSAGE_FAILED", "raw": inner}
+
+    logger.error("[%s] OpenLines unknown response shape: %s", tid, _truncate(_safe_json(res), _dbg_limit()))
+    return {"success": False, "error": "IMCONNECTOR_UNEXPECTED_RESPONSE", "raw": res}

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import (
     BigInteger,
@@ -162,3 +162,22 @@ class BotUser(Base):
 
     last_user_path = Column(JSON)
     user_metadata = Column(JSON, default={})
+
+
+class BitrixOAuthToken(Base):
+    __tablename__ = "bitrix_oauth_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    portal = Column(String(255), nullable=False, unique=True, index=True)
+    access_token = Column(Text, nullable=True)
+    refresh_token = Column(Text, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    is_valid = Column(Boolean, nullable=False, default=True)
+    version = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )

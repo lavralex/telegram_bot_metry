@@ -67,18 +67,20 @@ async def fallback_private(message: Message, state: FSMContext):
 
         if config.BITRIX24_ENABLED and getattr(config, "BITRIX24_OPENLINES_ENABLED", True):
             lead_id_for_ol = int(ensured_bitrix_id) if ensured_bitrix_id else 0
+            if lead_id_for_ol <= 0:
+                logger.warning("⚠️ Skip OpenLines send: missing bitrix_lead_id for local lead_id=%s", getattr(lead_obj, "id", None))
+            else:
+                res = await send_message_to_openlines(
+                    lead_id=lead_id_for_ol,
+                    tg_user_id=tg_user_id,
+                    tg_username=tg_username,
+                    text=text,
+                    message_id=str(message.message_id),
+                    unix_date=int(time.time()),
+                )
 
-            res = await send_message_to_openlines(
-                lead_id=lead_id_for_ol,
-                tg_user_id=tg_user_id,
-                tg_username=tg_username,
-                text=text,
-                message_id=str(message.message_id),
-                unix_date=int(time.time()),
-            )
-
-            if not res.get("success"):
-                logger.warning("⚠️ OpenLines send failed: %s", res)
+                if not res.get("success"):
+                    logger.warning("⚠️ OpenLines send failed: %s", res)
 
         await message.answer(
             "Я передал ваше сообщение менеджеру.\n"

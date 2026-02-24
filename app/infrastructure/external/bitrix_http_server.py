@@ -7,7 +7,6 @@ import os
 import re
 import time
 import urllib.parse
-from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -15,7 +14,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from app.core.config import config
-from app.infrastructure.external.bitrix_oauth import BitrixOAuthService, OAuthToken, OAUTH_TOKEN_URL
+from app.infrastructure.external.bitrix_oauth import BitrixOAuthService, OAUTH_TOKEN_URL
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +111,7 @@ def _extract_author_name(msg: dict) -> str:
 
     sender = msg.get("sender") or msg.get("author") or {}
     name = sender.get("name") or sender.get("NAME")
-    return str(name) if name else "Менеджер"
+    return str(name) if name else "Manager"
 
 
 async def _send_to_tg(bot, user_id: int, out_text: str, trace: str) -> None:
@@ -177,10 +176,6 @@ async def _parse_bitrix_event_payload(request: Request) -> Dict[str, Any]:
         return {}
 
 
-def _public_base_url() -> str:
-    return str(getattr(config, "PUBLIC_BASE_URL", "") or "").rstrip("/")
-
-
 def create_app(bot) -> FastAPI:
     app = FastAPI()
     expected_connector = _expected_connector()
@@ -191,12 +186,10 @@ def create_app(bot) -> FastAPI:
 
     @app.get("/bitrix/diag")
     async def bitrix_diag():
-        """
-        Диагностика: подписки + состояние коннектора/линии.
-        """
         try:
-            from app.infrastructure.external.bitrix24 import _post_bitrix, ensure_bitrix_ready
+            from app.infrastructure.external.bitrix24 import _post_bitrix
 
+            oauth = BitrixOAuthService()
             res_event = await _post_bitrix("event.get", {})
             res_status = await _post_bitrix(
                 "imconnector.status",
@@ -205,6 +198,7 @@ def create_app(bot) -> FastAPI:
 
             return {
                 "ok": True,
+                "oauth_token_state": oauth.get_token_state(),
                 "event_get": res_event,
                 "imconnector_status": res_status,
                 "hint": "call /bitrix/diag after OAuth install to see bindings",
@@ -215,11 +209,9 @@ def create_app(bot) -> FastAPI:
 
     @app.post("/bitrix/ensure-ready")
     async def bitrix_ensure_ready():
-        """
-        Принудительно дернуть ensure_bitrix_ready (удобно для диагностики).
-        """
         try:
             from app.infrastructure.external.bitrix24 import ensure_bitrix_ready
+
             res = await ensure_bitrix_ready()
             return {"ok": True, "result": res}
         except Exception as e:
@@ -276,25 +268,25 @@ def create_app(bot) -> FastAPI:
             return JSONResponse({"ok": False, "error": "bad_token_response", "raw": data}, status_code=500)
 
         expires_in = int(data.get("expires_in", 3600))
-        token = OAuthToken(
+        oauth = BitrixOAuthService()
+        oauth.save_oauth_tokens(
             access_token=str(data["access_token"]),
             refresh_token=str(data.get("refresh_token", "")),
-            expires_at=BitrixOAuthService._now_utc() + timedelta(seconds=expires_in),
+            expires_in=expires_in,
         )
 
-        oauth = BitrixOAuthService()
-        oauth.storage.save(token)
-
-        logger.info("✅ OAuth tokens saved. expires_in=%s", expires_in)
+        logger.info("OAuth tokens saved to dedicated storage. expires_in=%s", expires_in)
 
         try:
             from app.infrastructure.external.bitrix24 import ensure_bitrix_ready
+
             res = await ensure_bitrix_ready()
-            logger.info("✅ ensure_bitrix_ready result: %s", str(res)[:1200])
+            logger.info("Bitrix bootstrap after callback: %s", str(res)[:1200])
         except Exception as e:
             logger.error("ensure_bitrix_ready failed: %s", e, exc_info=True)
+            res = {"success": False, "error": str(e)}
 
-        return {"ok": True, "saved": True}
+        return {"ok": True, "saved": True, "bootstrap": res}
 
     @app.api_route("/bitrix/events", methods=["GET", "POST"])
     async def bitrix_events(request: Request):
@@ -302,7 +294,6 @@ def create_app(bot) -> FastAPI:
             return PlainTextResponse("OK", status_code=200)
 
         trace = request.headers.get("X-Request-Id") or os.urandom(6).hex()
-
         payload: Dict[str, Any] = await _parse_bitrix_event_payload(request)
 
         event = (

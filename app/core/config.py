@@ -24,11 +24,14 @@ def _env_int(name: str, default: int | None = None) -> int | None:
 
 
 ENV = os.getenv("ENV", "development")
-env_file = f".env.{ENV}"
-if Path(env_file).exists():
-    load_dotenv(env_file)
-else:
-    load_dotenv()
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_env_file = _PROJECT_ROOT / f".env.{ENV}"
+_default_env = _PROJECT_ROOT / ".env"
+
+if _default_env.exists():
+    load_dotenv(_default_env, override=False)
+if _env_file.exists():
+    load_dotenv(_env_file, override=True)
 
 
 class Config:
@@ -45,11 +48,21 @@ class Config:
     BITRIX24_ENABLED = _env_bool("BITRIX24_ENABLED", False)
 
     BITRIX24_USE_OAUTH = _env_bool("BITRIX24_USE_OAUTH", False)
-    BITRIX24_PORTAL = (os.getenv("BITRIX24_PORTAL", "") or "").strip()
-    BITRIX24_CLIENT_ID = (os.getenv("BITRIX24_CLIENT_ID", "") or "").strip()
-    BITRIX24_CLIENT_SECRET = (os.getenv("BITRIX24_CLIENT_SECRET", "") or "").strip()
+    BITRIX24_PORTAL = (os.getenv("BITRIX24_PORTAL_URL") or os.getenv("BITRIX24_PORTAL", "") or "").strip()
+    BITRIX24_CLIENT_ID = (os.getenv("BITRIX24_OAUTH_CLIENT_ID") or os.getenv("BITRIX24_CLIENT_ID", "") or "").strip()
+    BITRIX24_CLIENT_SECRET = (
+        os.getenv("BITRIX24_OAUTH_CLIENT_SECRET") or os.getenv("BITRIX24_CLIENT_SECRET", "") or ""
+    ).strip()
     PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL", "") or "").rstrip("/")
-    BITRIX24_REDIRECT_URI = (os.getenv("BITRIX24_REDIRECT_URI", "") or "").strip()
+    BITRIX24_REDIRECT_URI = (
+        os.getenv("BITRIX24_OAUTH_REDIRECT_URI") or os.getenv("BITRIX24_REDIRECT_URI", "") or ""
+    ).strip()
+    BITRIX24_OAUTH_ACCESS_TOKEN = (os.getenv("BITRIX24_OAUTH_ACCESS_TOKEN", "") or "").strip()
+    BITRIX24_OAUTH_REFRESH_TOKEN = (os.getenv("BITRIX24_OAUTH_REFRESH_TOKEN", "") or "").strip()
+    BITRIX24_OAUTH_TOKEN_URL = (
+        os.getenv("BITRIX24_OAUTH_TOKEN_URL", "https://oauth.bitrix.info/oauth/token/") or ""
+    ).strip()
+    BITRIX24_OAUTH_EXPIRES_IN = _env_int("BITRIX24_OAUTH_EXPIRES_IN", 3600) or 3600
 
     BITRIX24_WEBHOOK_URL = (os.getenv("BITRIX24_WEBHOOK_URL", "") or "").rstrip("/")
 

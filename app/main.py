@@ -56,8 +56,7 @@ async def _try_bootstrap_bitrix(logger: logging.Logger) -> None:
 
     try:
         oauth = BitrixOAuthService()
-        token = oauth.storage.load()
-        if not token:
+        if not oauth.has_valid_token():
             logger.info("ℹ️ Bitrix bootstrap skipped: OAuth tokens not found yet (install app first)")
             return
 
