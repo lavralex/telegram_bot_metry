@@ -338,6 +338,11 @@ async def ensure_event_bound(*, event_name: str, handler_url: str, trace_id: Opt
     bind_payload = {"EVENT": event_name, "HANDLER": handler_url}
     bind_res = await _post_bitrix("event.bind", bind_payload, trace_id=tid)
     if not bind_res.get("success"):
+        err = str(bind_res.get("error") or "")
+        desc = str(bind_res.get("error_description") or "")
+        if err == "ERROR_CORE" and "already binded" in desc.lower():
+            logger.info("[%s] event already bound (bind conflict): %s -> %s", tid, event_name, handler_url)
+            return {"success": True, "bound": True, "already": True, "raw": bind_res.get("raw")}
         return bind_res
 
     logger.info("[%s] event bound: %s -> %s", tid, event_name, handler_url)
