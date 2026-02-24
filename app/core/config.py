@@ -69,6 +69,7 @@ class Config:
     BITRIX24_TELEGRAM_SOURCE_ID = (os.getenv("BITRIX24_TELEGRAM_SOURCE_ID", "") or "").strip()
 
     BITRIX24_OPENLINES_ENABLED = _env_bool("BITRIX24_OPENLINES_ENABLED", True)
+    BITRIX24_OPENLINES_OWNS_LEAD = _env_bool("BITRIX24_OPENLINES_OWNS_LEAD", False)
 
     BITRIX24_CONNECTOR_ID = (os.getenv("BITRIX24_CONNECTOR_ID", "") or "").strip()
     BITRIX24_OPENLINE_ID = (os.getenv("BITRIX24_OPENLINE_ID", "") or "").strip()

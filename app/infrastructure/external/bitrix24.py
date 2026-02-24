@@ -538,6 +538,81 @@ async def ensure_bitrix_lead(lead_obj: Any, fields: Dict[str, Any], *, trace_id:
     return res
 
 
+def _extract_first_result_item(res: Dict[str, Any]) -> Dict[str, Any]:
+    inner = res.get("result")
+    if not isinstance(inner, dict):
+        return {}
+    data = inner.get("DATA") or {}
+    results = data.get("RESULT") or []
+    if isinstance(results, list) and results and isinstance(results[0], dict):
+        return results[0]
+    return {}
+
+
+def _extract_im_ids_from_openlines_result(res: Dict[str, Any]) -> Dict[str, str]:
+    first = _extract_first_result_item(res)
+    im = first.get("IM") or first.get("im") or {}
+    if not isinstance(im, dict):
+        im = {}
+    chat_id = str(im.get("CHAT_ID") or im.get("chat_id") or "").strip()
+    message_id = str(im.get("MESSAGE_ID") or im.get("message_id") or "").strip()
+    return {"im_chat_id": chat_id, "im_message_id": message_id}
+
+
+def _find_int_by_keys(obj: Any, keys: set[str]) -> Optional[int]:
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if str(k).lower() in keys:
+                try:
+                    return int(v)
+                except Exception:
+                    pass
+            found = _find_int_by_keys(v, keys)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _find_int_by_keys(item, keys)
+            if found:
+                return found
+    return None
+
+
+async def get_openlines_lead_id_by_chat_id(im_chat_id: str, *, trace_id: Optional[str] = None) -> Dict[str, Any]:
+    tid = trace_id or uuid.uuid4().hex[:12]
+    if not im_chat_id:
+        return {"success": False, "error": "im_chat_id is empty"}
+
+    # Bitrix returns heterogeneous shapes across portals; parse defensively.
+    res = await _post_bitrix("imopenlines.crm.chat.get", {"CHAT_ID": str(im_chat_id)}, trace_id=tid)
+    if not res.get("success"):
+        return res
+
+    result = res.get("result")
+    lead_id = _find_int_by_keys(result, {"lead", "lead_id", "crm_lead_id"})
+    if lead_id:
+        return {"success": True, "lead_id": int(lead_id), "raw": result}
+    return {"success": False, "error": "LEAD_NOT_FOUND_IN_CHAT", "raw": result}
+
+
+async def enrich_openlines_lead(
+    *,
+    im_chat_id: str,
+    fields: Dict[str, Any],
+    trace_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    tid = trace_id or uuid.uuid4().hex[:12]
+    lookup = await get_openlines_lead_id_by_chat_id(im_chat_id, trace_id=tid + "L")
+    if not lookup.get("success"):
+        return lookup
+
+    lead_id = int(lookup["lead_id"])
+    upd = await _post_bitrix("crm.lead.update", {"id": lead_id, "fields": fields}, trace_id=tid + "U")
+    if not upd.get("success"):
+        return upd
+    return {"success": True, "lead_id": lead_id, "updated": True, "raw": upd.get("result")}
+
+
 async def send_message_to_openlines(
     *,
     lead_id: int,
@@ -546,6 +621,7 @@ async def send_message_to_openlines(
     text: str,
     message_id: str,
     unix_date: int,
+    attach_crm: bool = True,
     trace_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     tid = trace_id or uuid.uuid4().hex[:12]
@@ -593,7 +669,7 @@ async def send_message_to_openlines(
         },
     }
 
-    if int(lead_id) > 0:
+    if attach_crm and int(lead_id) > 0:
         msg["crm"] = {"lead": int(lead_id)}
         # Some Bitrix portals/connectors expect crm_entity format for binding.
         msg["crm_entity"] = f"L_{int(lead_id)}"
@@ -631,7 +707,8 @@ async def send_message_to_openlines(
     if isinstance(inner, bool):
         if inner is True:
             logger.warning("[%s] OpenLines send OK (bool result)", tid)
-            return {"success": True}
+            ids = _extract_im_ids_from_openlines_result(res)
+            return {"success": True, **ids}
         logger.error("[%s] OpenLines rejected message: result=false", tid)
         return {"success": False, "error": "IMCONNECTOR_MESSAGE_FAILED", "raw": res}
 
@@ -643,7 +720,8 @@ async def send_message_to_openlines(
             first = results[0] if isinstance(results[0], dict) else {"raw": results[0]}
             if first.get("SUCCESS") is True:
                 logger.warning("[%s] OpenLines send OK (DATA.RESULT)", tid)
-                return {"success": True}
+                ids = _extract_im_ids_from_openlines_result(res)
+                return {"success": True, **ids}
 
             logger.error(
                 "[%s] OpenLines rejected message: %s",
@@ -673,10 +751,12 @@ async def send_message_to_openlines(
                             r0 = retry_results[0] if isinstance(retry_results[0], dict) else {"raw": retry_results[0]}
                             if r0.get("SUCCESS") is True:
                                 logger.warning("[%s] OpenLines send OK on retry (DATA.RESULT)", tid)
-                                return {"success": True}
+                                ids = _extract_im_ids_from_openlines_result(retry_res)
+                                return {"success": True, **ids}
                         if retry_inner.get("SUCCESS") is True:
                             logger.warning("[%s] OpenLines send OK on retry (SUCCESS)", tid)
-                            return {"success": True}
+                            ids = _extract_im_ids_from_openlines_result(retry_res)
+                            return {"success": True, **ids}
 
             return {
                 "success": False,
@@ -686,7 +766,8 @@ async def send_message_to_openlines(
 
         if inner.get("SUCCESS") is True:
             logger.warning("[%s] OpenLines send OK (SUCCESS)", tid)
-            return {"success": True}
+            ids = _extract_im_ids_from_openlines_result(res)
+            return {"success": True, **ids}
 
         if "SUCCESS" in inner and inner.get("SUCCESS") is not True:
             logger.error("[%s] OpenLines rejected message: %s", tid, _truncate(_safe_json(inner), _dbg_limit()))

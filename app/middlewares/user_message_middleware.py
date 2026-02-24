@@ -15,7 +15,11 @@ from app.application.repositories.lead_repository import LeadRepository
 from app.application.repositories.message_repository import MessageRepository
 
 from app.infrastructure.database.models import Lead
-from app.infrastructure.external.bitrix24 import ensure_bitrix_lead, send_message_to_openlines
+from app.infrastructure.external.bitrix24 import (
+    ensure_bitrix_lead,
+    send_message_to_openlines,
+    enrich_openlines_lead,
+)
 
 logger = logging.getLogger("bot.messages")
 
@@ -137,8 +141,9 @@ class UserMessageMiddleware(BaseMiddleware):
                 message_text = "[media]"
 
             lead, bitrix_fields = lead_service.ensure_minimal_lead_from_state(user_data, state_data)
+            ol_owns_lead = bool(getattr(config, "BITRIX24_OPENLINES_OWNS_LEAD", False))
 
-            if config.BITRIX24_ENABLED:
+            if config.BITRIX24_ENABLED and not ol_owns_lead:
                 bres = await ensure_bitrix_lead(lead, bitrix_fields, trace_id=trace_id + "B")
                 if bres.get("success"):
                     ensured_id = int(bres["lead_id"])
@@ -167,7 +172,7 @@ class UserMessageMiddleware(BaseMiddleware):
                 prefix = f"[segment={seg}, utm={utm}] "
                 lead_id_for_ol = int(getattr(lead, "bitrix_lead_id", 0) or 0)
 
-                if lead_id_for_ol <= 0:
+                if lead_id_for_ol <= 0 and not ol_owns_lead:
                     logger.warning("[%s] Skip OpenLines send: missing bitrix_lead_id for local lead_id=%s", trace_id, lead.id)
                 else:
                     ol_res = await send_message_to_openlines(
@@ -177,6 +182,7 @@ class UserMessageMiddleware(BaseMiddleware):
                         text=prefix + message_text,
                         message_id=str(message.message_id),
                         unix_date=int(message.date.timestamp()),
+                        attach_crm=not ol_owns_lead,
                         trace_id=trace_id + "O",
                     )
 
@@ -184,6 +190,21 @@ class UserMessageMiddleware(BaseMiddleware):
                         ol_error = str(ol_res.get("error") or "unknown error")
                         logger.warning("[%s] OpenLines send failed: %s", trace_id, ol_error)
                     else:
+                        if ol_owns_lead and not lead_id_for_ol:
+                            im_chat_id = str(ol_res.get("im_chat_id") or "")
+                            if im_chat_id:
+                                enrich = await enrich_openlines_lead(
+                                    im_chat_id=im_chat_id,
+                                    fields=bitrix_fields,
+                                    trace_id=trace_id + "E",
+                                )
+                                if enrich.get("success"):
+                                    ensured_id = int(enrich["lead_id"])
+                                    lead_repo.set_bitrix_lead_id(lead.id, ensured_id)
+                                    lead.bitrix_lead_id = ensured_id
+                                    logger.info("[%s] OpenLines lead enriched: %s", trace_id, ensured_id)
+                                else:
+                                    logger.warning("[%s] OpenLines lead enrich failed: %s", trace_id, enrich)
                         ol_sent_ok = True
                         logger.info("[%s] OpenLines send OK", trace_id)
 

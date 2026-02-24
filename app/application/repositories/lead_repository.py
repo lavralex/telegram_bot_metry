@@ -59,6 +59,19 @@ class LeadRepository:
         self.db.refresh(lead)
         return lead
 
+    def set_openlines_chat_id(self, lead_id: int, openlines_chat_id: int | str) -> Optional[Lead]:
+        lead = self.get_lead_by_id(lead_id)
+        if not lead:
+            return None
+        try:
+            lead.openlines_chat_id = int(openlines_chat_id)
+        except Exception:
+            lead.openlines_chat_id = None
+        lead.updated_at = datetime.utcnow()
+        self.db.commit()
+        self.db.refresh(lead)
+        return lead
+
     def update_lead_from_state(self, lead_id: int, state_data: Dict[str, Any]) -> Optional[Lead]:
         lead = self.get_lead_by_id(lead_id)
         if not lead:

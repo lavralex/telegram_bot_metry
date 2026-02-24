@@ -10,7 +10,7 @@ from aiogram.fsm.context import FSMContext
 from app.core.config import config
 from app.core.dependencies import get_lead_repository
 from app.application.services.lead_service import LeadService
-from app.infrastructure.external.bitrix24 import ensure_bitrix_lead, send_message_to_openlines
+from app.infrastructure.external.bitrix24 import ensure_bitrix_lead, send_message_to_openlines, enrich_openlines_lead
 
 logger = logging.getLogger(__name__)
 fallback_router = Router()
@@ -54,8 +54,9 @@ async def fallback_private(message: Message, state: FSMContext):
         lead_service = LeadService(lead_repo)
         lead_obj, bitrix_fields = lead_service.ensure_minimal_lead_from_state(_tg_user_info(message), state_data)
         ensured_bitrix_id = getattr(lead_obj, "bitrix_lead_id", None)
+        ol_owns_lead = bool(getattr(config, "BITRIX24_OPENLINES_OWNS_LEAD", False))
 
-        if config.BITRIX24_ENABLED:
+        if config.BITRIX24_ENABLED and not ol_owns_lead:
             bres = await ensure_bitrix_lead(lead_obj, bitrix_fields)
             if bres.get("success"):
                 ensured_bitrix_id = int(bres["lead_id"])
@@ -72,7 +73,7 @@ async def fallback_private(message: Message, state: FSMContext):
 
         if config.BITRIX24_ENABLED and getattr(config, "BITRIX24_OPENLINES_ENABLED", True):
             lead_id_for_ol = int(ensured_bitrix_id) if ensured_bitrix_id else 0
-            if lead_id_for_ol <= 0:
+            if lead_id_for_ol <= 0 and not ol_owns_lead:
                 logger.warning("⚠️ Skip OpenLines send: missing bitrix_lead_id for local lead_id=%s", getattr(lead_obj, "id", None))
             else:
                 res = await send_message_to_openlines(
@@ -82,10 +83,26 @@ async def fallback_private(message: Message, state: FSMContext):
                     text=text,
                     message_id=str(message.message_id),
                     unix_date=int(time.time()),
+                    attach_crm=not ol_owns_lead,
                 )
 
                 if not res.get("success"):
                     logger.warning("⚠️ OpenLines send failed: %s", res)
+                elif ol_owns_lead and not lead_id_for_ol:
+                    im_chat_id = str(res.get("im_chat_id") or "")
+                    if im_chat_id:
+                        enrich = await enrich_openlines_lead(
+                            im_chat_id=im_chat_id,
+                            fields=bitrix_fields,
+                            trace_id=f"fallback_{message.message_id}",
+                        )
+                        if enrich.get("success"):
+                            ensured_bitrix_id = int(enrich["lead_id"])
+                            lead_repo.set_bitrix_lead_id(lead_obj.id, ensured_bitrix_id)
+                            lead_obj.bitrix_lead_id = ensured_bitrix_id
+                            logger.info("✅ OpenLines lead enriched: %s", ensured_bitrix_id)
+                        else:
+                            logger.warning("⚠️ OpenLines lead enrich failed: %s", enrich)
 
         await message.answer(
             "Я передал ваше сообщение менеджеру.\n"
