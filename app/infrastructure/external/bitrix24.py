@@ -546,6 +546,7 @@ async def send_message_to_openlines(
         "chat": {
             "id": str(tg_user_id),
             "name": f"Telegram {tg_user_id}",
+            "url": f"https://t.me/{tg_username}" if tg_username else "",
         },
         "message": {
             "id": str(message_id),
@@ -559,7 +560,7 @@ async def send_message_to_openlines(
         # Some Bitrix portals/connectors expect crm_entity format for binding.
         msg["crm_entity"] = f"L_{int(lead_id)}"
 
-    payload = {
+    payload: Dict[str, Any] = {
         "CONNECTOR": connector,
         "LINE": line,
         "MESSAGES": [msg],
@@ -611,6 +612,34 @@ async def send_message_to_openlines(
                 tid,
                 _truncate(_safe_json(first), _dbg_limit()),
             )
+
+            # Compatibility retry: some portals reject crm_entity with generic "missing required data".
+            errs = first.get("ERRORS") or []
+            has_missing_data = any("не все необходимые данные" in str(e).lower() for e in errs)
+            if has_missing_data and "crm_entity" in msg:
+                msg2 = dict(msg)
+                msg2.pop("crm_entity", None)
+                payload2 = dict(payload)
+                payload2["MESSAGES"] = [msg2]
+                logger.warning("[%s] OpenLines retry without crm_entity", tid)
+                retry_res = await _post_bitrix("imconnector.send.messages", payload2, trace_id=tid + "r")
+                if retry_res.get("success"):
+                    retry_inner = retry_res.get("result")
+                    if isinstance(retry_inner, bool) and retry_inner is True:
+                        logger.warning("[%s] OpenLines send OK on retry (bool result)", tid)
+                        return {"success": True}
+                    if isinstance(retry_inner, dict):
+                        retry_data = retry_inner.get("DATA") or {}
+                        retry_results = retry_data.get("RESULT") or []
+                        if isinstance(retry_results, list) and retry_results:
+                            r0 = retry_results[0] if isinstance(retry_results[0], dict) else {"raw": retry_results[0]}
+                            if r0.get("SUCCESS") is True:
+                                logger.warning("[%s] OpenLines send OK on retry (DATA.RESULT)", tid)
+                                return {"success": True}
+                        if retry_inner.get("SUCCESS") is True:
+                            logger.warning("[%s] OpenLines send OK on retry (SUCCESS)", tid)
+                            return {"success": True}
+
             return {
                 "success": False,
                 "error": "IMCONNECTOR_MESSAGE_FAILED",
