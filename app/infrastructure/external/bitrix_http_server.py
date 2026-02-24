@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from app.core.config import config
 from app.infrastructure.external.bitrix_oauth import BitrixOAuthService, OAUTH_TOKEN_URL
+from app.infrastructure.external.bitrix24 import send_openlines_delivery_status
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,20 @@ def _extract_user_id_from_chat_id(chat_id: Any) -> Optional[int]:
         return None
 
     s = chat_id.strip()
+    m = re.match(r"^tg_u(\d+)_l\d+$", s)
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            return None
+
+    m = re.match(r"^tg_(\d+)_lead_\d+$", s)
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            return None
+
     if s.startswith("tg_") and s[3:].isdigit():
         return int(s[3:])
     if s.isdigit():
@@ -130,10 +145,46 @@ def _extract_author_name(msg: dict) -> str:
     return str(name) if name else "Manager"
 
 
-async def _send_to_tg(bot, user_id: int, out_text: str, trace: str) -> None:
+def _normalize_bitrix_text(text: str) -> str:
+    # Bitrix often sends simple BBCode markers in OpenLines payload.
+    t = (text or "").replace("[br]", "\n").replace("[BR]", "\n")
+    t = re.sub(r"\[/?(?:b|i|u|s|quote|code)\]", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return t.strip()
+
+
+def _extract_manager_name_from_bbcode(text: str) -> tuple[str | None, str]:
+    raw = text or ""
+    m = re.match(r"^\s*\[b\]\s*(.*?)\s*\[/b\]\s*(?:\[br\]|\n)\s*(.*)$", raw, flags=re.IGNORECASE | re.DOTALL)
+    if not m:
+        return None, _normalize_bitrix_text(raw)
+    manager_name = (m.group(1) or "").strip()
+    body = _normalize_bitrix_text(m.group(2) or "")
+    return (manager_name or None), body
+
+
+async def _send_to_tg(
+    bot,
+    user_id: int,
+    out_text: str,
+    trace: str,
+    *,
+    connector: str = "",
+    line: int = 0,
+    im_chat_id: str = "",
+    im_message_id: str = "",
+) -> None:
     try:
         await bot.send_message(user_id, out_text)
         logger.info("[%s] [BITRIX->TG] sent user_id=%s len=%s", trace, user_id, len(out_text))
+        if connector and line and im_chat_id and im_message_id:
+            await send_openlines_delivery_status(
+                connector=connector,
+                line=line,
+                im_chat_id=im_chat_id,
+                im_message_id=im_message_id,
+                trace_id=trace + "D",
+            )
     except Exception as e:
         logger.error("[%s] [BITRIX->TG] send failed user_id=%s err=%s", trace, user_id, e, exc_info=True)
 
@@ -442,8 +493,8 @@ def create_app(bot) -> FastAPI:
                     logger.info("[%s] [BITRIX EVENT] dedup skip key=%s", trace, key)
                     continue
 
-                text = _extract_text(msg)
-                if not text:
+                raw_text = _extract_text(msg)
+                if not raw_text:
                     logger.warning("[%s] [BITRIX EVENT] empty text in message", trace)
                     continue
 
@@ -454,12 +505,52 @@ def create_app(bot) -> FastAPI:
                     continue
 
                 author = _extract_author_name(msg)
-                out_text = f"💬 {author}: {text}"
+                manager_name, clean_text = _extract_manager_name_from_bbcode(raw_text)
+                if not clean_text:
+                    logger.warning("[%s] [BITRIX EVENT] empty text after normalize", trace)
+                    continue
+
+                header_name = manager_name or author
+                out_text = f"Manager {header_name}:\n\n{clean_text}"
+
+                data_root = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+                connector = str(
+                    msg.get("connector")
+                    or msg.get("CONNECTOR")
+                    or data_root.get("CONNECTOR")
+                    or data_root.get("connector")
+                    or ""
+                ).strip()
+                line_raw = (
+                    msg.get("line")
+                    or msg.get("LINE")
+                    or data_root.get("LINE")
+                    or data_root.get("line")
+                    or 0
+                )
+                try:
+                    line = int(line_raw)
+                except Exception:
+                    line = 0
+                im_obj = msg.get("im") if isinstance(msg.get("im"), dict) else {}
+                im_chat_id = str(im_obj.get("chat_id") or "").strip()
+                im_message_id = str(im_obj.get("message_id") or "").strip()
 
                 if key:
                     _dedup_mark(key)
 
-                asyncio.create_task(_send_to_tg(bot, user_id, out_text, trace))
+                asyncio.create_task(
+                    _send_to_tg(
+                        bot,
+                        user_id,
+                        out_text,
+                        trace,
+                        connector=connector,
+                        line=line,
+                        im_chat_id=im_chat_id,
+                        im_message_id=im_message_id,
+                    )
+                )
 
             except Exception as e:
                 logger.error("[%s] Bitrix event processing failed: %s", trace, e, exc_info=True)

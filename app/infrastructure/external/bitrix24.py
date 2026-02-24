@@ -52,6 +52,13 @@ def _connector_name() -> str:
     return str(getattr(config, "BITRIX24_CONNECTOR_NAME", "") or "Metri Telegram Bot").strip()
 
 
+def _build_openlines_chat_id(*, tg_user_id: int, lead_id: int) -> str:
+    # Chat ID is linked to lead to avoid one sticky dialog per Telegram user.
+    if int(lead_id) > 0:
+        return f"tg_u{int(tg_user_id)}_l{int(lead_id)}"
+    return f"tg_u{int(tg_user_id)}"
+
+
 def _dbg() -> bool:
     return bool(getattr(config, "BITRIX24_DEBUG", False)) and not bool(getattr(config, "is_production", False))
 
@@ -558,6 +565,7 @@ async def send_message_to_openlines(
         return {"success": False, "error": "BITRIX24_CONNECTOR_ID (CONNECTOR) is empty"}
 
     user_display = f"@{tg_username}" if tg_username else f"Telegram {tg_user_id}"
+    chat_id = _build_openlines_chat_id(tg_user_id=tg_user_id, lead_id=lead_id)
 
     msg: Dict[str, Any] = {
         "user": {
@@ -566,7 +574,7 @@ async def send_message_to_openlines(
             "url": f"https://t.me/{tg_username}" if tg_username else f"https://t.me/{tg_user_id}",
         },
         "chat": {
-            "id": str(tg_user_id),
+            "id": chat_id,
             "name": f"Telegram {tg_user_id}",
             "url": f"https://t.me/{tg_username}" if tg_username else "",
         },
@@ -678,3 +686,44 @@ async def send_message_to_openlines(
 
     logger.error("[%s] OpenLines unknown response shape: %s", tid, _truncate(_safe_json(res), _dbg_limit()))
     return {"success": False, "error": "IMCONNECTOR_UNEXPECTED_RESPONSE", "raw": res}
+
+
+async def send_openlines_delivery_status(
+    *,
+    connector: str,
+    line: int,
+    im_chat_id: str,
+    im_message_id: str,
+    trace_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    tid = trace_id or uuid.uuid4().hex[:12]
+
+    connector = str(connector or "").strip()
+    if not connector:
+        return {"success": False, "error": "connector is empty"}
+    try:
+        line_i = int(line)
+    except Exception:
+        return {"success": False, "error": "line is invalid"}
+    if not str(im_chat_id or "").strip() or not str(im_message_id or "").strip():
+        return {"success": False, "error": "im_chat_id or im_message_id is empty"}
+
+    payload = {
+        "CONNECTOR": connector,
+        "LINE": line_i,
+        "MESSAGES": [
+            {
+                "im": {"chat_id": str(im_chat_id), "message_id": str(im_message_id)},
+                "message": {"id": [str(im_message_id)]},
+                "chat": {"id": str(im_chat_id)},
+            }
+        ],
+    }
+
+    res = await _post_bitrix("imconnector.send.status.delivery", payload, trace_id=tid)
+    if not res.get("success"):
+        logger.warning("[%s] OpenLines delivery status failed: %s", tid, _truncate(_safe_json(res), _dbg_limit()))
+        return res
+
+    logger.info("[%s] OpenLines delivery status sent", tid)
+    return {"success": True, "raw": res.get("result")}
