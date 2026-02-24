@@ -233,6 +233,15 @@ async def process_contact_with_state(message: Message, state: FSMContext):
     await process_contact_all(message, state)
 
 
+@contact_router.message(F.contact)
+async def process_contact_any_state(message: Message, state: FSMContext):
+    """
+    Fallback contact handler: some clients/flows may send contact outside the expected FSM state.
+    We still treat it as an authorization contact and create a new lead.
+    """
+    await process_contact_all(message, state)
+
+
 async def print_lead_info(user_info: dict, user_data: dict, lead_id: int):
     """Выводит информацию о лиде в консоль"""
     segment = user_data.get("segment", "unknown")
