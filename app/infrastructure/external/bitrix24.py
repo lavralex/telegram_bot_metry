@@ -302,10 +302,18 @@ async def ensure_event_bound(*, event_name: str, handler_url: str, trace_id: Opt
     if not handler_url:
         return {"success": False, "error": "handler_url is empty"}
 
+    normalized_event_name = str(event_name or "").strip().lower()
+
     def _handlers_from_event_get_result(current: Any) -> list[str]:
         handlers: list[str] = []
         if isinstance(current, dict):
             existing = current.get(event_name)
+            if existing is None:
+                # Some Bitrix responses use upper-cased event keys.
+                for k, v in current.items():
+                    if str(k).strip().lower() == normalized_event_name:
+                        existing = v
+                        break
             if isinstance(existing, str):
                 handlers = [existing]
             elif isinstance(existing, list):
@@ -319,8 +327,8 @@ async def ensure_event_bound(*, event_name: str, handler_url: str, trace_id: Opt
             for item in current:
                 if not isinstance(item, dict):
                     continue
-                ev = str(item.get("EVENT") or item.get("event") or "").strip()
-                if ev != event_name:
+                ev = str(item.get("EVENT") or item.get("event") or "").strip().lower()
+                if ev != normalized_event_name:
                     continue
                 handler = item.get("HANDLER") or item.get("handler")
                 if handler:
