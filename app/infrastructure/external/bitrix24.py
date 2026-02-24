@@ -306,18 +306,30 @@ async def ensure_event_bound(*, event_name: str, handler_url: str, trace_id: Opt
     if not res.get("success"):
         return res
 
-    current = res.get("result") or {}
-    existing = current.get(event_name)
+    current = res.get("result")
 
     existing_handlers = []
-    if isinstance(existing, str):
-        existing_handlers = [existing]
-    elif isinstance(existing, list):
-        existing_handlers = [str(x) for x in existing]
-    elif existing is None:
-        existing_handlers = []
-    else:
-        existing_handlers = [str(existing)]
+    if isinstance(current, dict):
+        existing = current.get(event_name)
+        if isinstance(existing, str):
+            existing_handlers = [existing]
+        elif isinstance(existing, list):
+            existing_handlers = [str(x) for x in existing]
+        elif existing is None:
+            existing_handlers = []
+        else:
+            existing_handlers = [str(existing)]
+    elif isinstance(current, list):
+        # Some Bitrix portals return event.get as a list of bindings.
+        for item in current:
+            if not isinstance(item, dict):
+                continue
+            ev = str(item.get("EVENT") or item.get("event") or "").strip()
+            if ev != event_name:
+                continue
+            handler = item.get("HANDLER") or item.get("handler")
+            if handler:
+                existing_handlers.append(str(handler))
 
     if any(h.rstrip("/") == handler_url.rstrip("/") for h in existing_handlers):
         logger.info("[%s] event already bound: %s -> %s", tid, event_name, handler_url)
