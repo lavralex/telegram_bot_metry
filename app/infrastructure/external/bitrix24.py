@@ -594,13 +594,22 @@ async def get_openlines_lead_id_by_chat_id(im_chat_id: str, *, trace_id: Optiona
         return {"success": False, "error": "im_chat_id is empty"}
 
     # Bitrix returns heterogeneous shapes across portals; parse defensively.
+    if _dbg():
+        logger.warning("[%s] OL chat->lead lookup request: CHAT_ID=%s", tid, im_chat_id)
+
     res = await _post_bitrix("imopenlines.crm.chat.get", {"CHAT_ID": str(im_chat_id)}, trace_id=tid)
     if not res.get("success"):
+        if _dbg():
+            logger.warning("[%s] OL chat->lead lookup failed: %s", tid, _truncate(_safe_json(res), _dbg_limit()))
         return res
 
     result = res.get("result")
+    if _dbg():
+        logger.warning("[%s] OL chat->lead raw result: %s", tid, _truncate(_safe_json(result), _dbg_limit()))
     lead_id = _find_int_by_keys(result, {"lead", "lead_id", "crm_lead_id"})
     if lead_id:
+        if _dbg():
+            logger.warning("[%s] OL chat->lead resolved lead_id=%s", tid, lead_id)
         return {"success": True, "lead_id": int(lead_id), "raw": result}
     return {"success": False, "error": "LEAD_NOT_FOUND_IN_CHAT", "raw": result}
 
@@ -612,8 +621,13 @@ async def enrich_openlines_lead(
     trace_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     tid = trace_id or uuid.uuid4().hex[:12]
+    if _dbg():
+        logger.warning("[%s] OL enrich start: im_chat_id=%s", tid, im_chat_id)
+
     lookup = await get_openlines_lead_id_by_chat_id(im_chat_id, trace_id=tid + "L")
     if not lookup.get("success"):
+        if _dbg():
+            logger.warning("[%s] OL enrich lookup failed: %s", tid, _truncate(_safe_json(lookup), _dbg_limit()))
         return lookup
 
     upd_fields = dict(fields or {})
@@ -625,9 +639,21 @@ async def enrich_openlines_lead(
     upd_fields.setdefault("timestamp", datetime.now().isoformat())
 
     lead_id = int(lookup["lead_id"])
+    if _dbg():
+        logger.warning(
+            "[%s] OL enrich update lead_id=%s fields_keys=%s comments_preview=%s",
+            tid,
+            lead_id,
+            sorted(list(upd_fields.keys())),
+            _truncate(str(upd_fields.get("COMMENTS", "")), 300),
+        )
     upd = await _post_bitrix("crm.lead.update", {"id": lead_id, "fields": upd_fields}, trace_id=tid + "U")
     if not upd.get("success"):
+        if _dbg():
+            logger.warning("[%s] OL enrich update failed: %s", tid, _truncate(_safe_json(upd), _dbg_limit()))
         return upd
+    if _dbg():
+        logger.warning("[%s] OL enrich update OK lead_id=%s", tid, lead_id)
     return {"success": True, "lead_id": lead_id, "updated": True, "raw": upd.get("result")}
 
 
@@ -700,14 +726,20 @@ async def send_message_to_openlines(
     }
 
     logger.warning(
-        "[%s] OpenLines send: connector=%s line=%s tg_user_id=%s msg_id=%s lead_id=%s",
+        "[%s] OpenLines send: connector=%s line=%s tg_user_id=%s msg_id=%s lead_id=%s attach_crm=%s chat_id=%s user_id=%s chat_token=%s",
         tid,
         connector,
         line,
         tg_user_id,
         message_id,
         lead_id,
+        attach_crm,
+        chat_id,
+        user_id,
+        chat_token or "",
     )
+    if _dbg():
+        logger.warning("[%s] OpenLines send payload=%s", tid, _truncate(_safe_json(payload), _dbg_limit()))
 
     res = await _post_bitrix("imconnector.send.messages", payload, trace_id=tid)
 
@@ -727,6 +759,8 @@ async def send_message_to_openlines(
         if inner is True:
             logger.warning("[%s] OpenLines send OK (bool result)", tid)
             ids = _extract_im_ids_from_openlines_result(res)
+            if _dbg():
+                logger.warning("[%s] OpenLines send IDs (bool result)=%s", tid, ids)
             return {"success": True, **ids}
         logger.error("[%s] OpenLines rejected message: result=false", tid)
         return {"success": False, "error": "IMCONNECTOR_MESSAGE_FAILED", "raw": res}
@@ -740,6 +774,13 @@ async def send_message_to_openlines(
             if first.get("SUCCESS") is True:
                 logger.warning("[%s] OpenLines send OK (DATA.RESULT)", tid)
                 ids = _extract_im_ids_from_openlines_result(res)
+                if _dbg():
+                    logger.warning(
+                        "[%s] OpenLines send IDs=%s first_result=%s",
+                        tid,
+                        ids,
+                        _truncate(_safe_json(first), _dbg_limit()),
+                    )
                 return {"success": True, **ids}
 
             logger.error(
@@ -762,7 +803,10 @@ async def send_message_to_openlines(
                     retry_inner = retry_res.get("result")
                     if isinstance(retry_inner, bool) and retry_inner is True:
                         logger.warning("[%s] OpenLines send OK on retry (bool result)", tid)
-                        return {"success": True}
+                        ids = _extract_im_ids_from_openlines_result(retry_res)
+                        if _dbg():
+                            logger.warning("[%s] OpenLines retry IDs (bool result)=%s", tid, ids)
+                        return {"success": True, **ids}
                     if isinstance(retry_inner, dict):
                         retry_data = retry_inner.get("DATA") or {}
                         retry_results = retry_data.get("RESULT") or []
