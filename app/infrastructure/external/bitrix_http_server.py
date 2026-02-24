@@ -416,13 +416,25 @@ def create_app(bot) -> FastAPI:
 
         messages = _extract_messages(payload)
         if not messages:
+            logger.warning(
+                "[%s] [BITRIX EVENT] no messages extracted; keys=%s",
+                trace,
+                list(payload.keys())[:50],
+            )
             return PlainTextResponse("OK", status_code=200)
 
         _dedup_gc()
 
         for msg in messages:
             try:
+                logger.warning(
+                    "[%s] [BITRIX EVENT] msg extracted keys=%s",
+                    trace,
+                    list(msg.keys())[:20] if isinstance(msg, dict) else type(msg).__name__,
+                )
+
                 if not _is_from_our_connector(msg, expected_connector):
+                    logger.warning("[%s] [BITRIX EVENT] skip foreign connector", trace)
                     continue
 
                 key = _dedup_key(msg)
@@ -432,6 +444,7 @@ def create_app(bot) -> FastAPI:
 
                 text = _extract_text(msg)
                 if not text:
+                    logger.warning("[%s] [BITRIX EVENT] empty text in message", trace)
                     continue
 
                 chat_id = _extract_chat_id(msg)
