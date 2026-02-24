@@ -80,6 +80,13 @@ def _extract_user_id_from_chat_id(chat_id: Any) -> Optional[int]:
         except Exception:
             return None
 
+    m = re.match(r"^tg_u(\d+)_s.+$", s)
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            return None
+
     m = re.match(r"^tg_(\d+)_lead_\d+$", s)
     if m:
         try:

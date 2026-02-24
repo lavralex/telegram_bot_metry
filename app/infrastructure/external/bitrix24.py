@@ -52,17 +52,21 @@ def _connector_name() -> str:
     return str(getattr(config, "BITRIX24_CONNECTOR_NAME", "") or "Metri Telegram Bot").strip()
 
 
-def _build_openlines_chat_id(*, tg_user_id: int, lead_id: int) -> str:
+def _build_openlines_chat_id(*, tg_user_id: int, lead_id: int, chat_token: str = "") -> str:
     # Chat ID is linked to lead to avoid one sticky dialog per Telegram user.
     if int(lead_id) > 0:
         return f"tg_u{int(tg_user_id)}_l{int(lead_id)}"
+    if str(chat_token or "").strip():
+        return f"tg_u{int(tg_user_id)}_s{str(chat_token).strip()}"
     return f"tg_u{int(tg_user_id)}"
 
 
-def _build_openlines_user_id(*, tg_user_id: int, lead_id: int) -> str:
+def _build_openlines_user_id(*, tg_user_id: int, lead_id: int, chat_token: str = "") -> str:
     # Many portals key dialogs by user.id, so it must also be lead-scoped.
     if int(lead_id) > 0:
         return f"tg_u{int(tg_user_id)}_l{int(lead_id)}"
+    if str(chat_token or "").strip():
+        return f"tg_u{int(tg_user_id)}_s{str(chat_token).strip()}"
     return f"tg_u{int(tg_user_id)}"
 
 
@@ -622,6 +626,7 @@ async def send_message_to_openlines(
     message_id: str,
     unix_date: int,
     attach_crm: bool = True,
+    chat_token: str = "",
     trace_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     tid = trace_id or uuid.uuid4().hex[:12]
@@ -648,8 +653,8 @@ async def send_message_to_openlines(
         return {"success": False, "error": "BITRIX24_CONNECTOR_ID (CONNECTOR) is empty"}
 
     user_display = f"@{tg_username}" if tg_username else f"Telegram {tg_user_id}"
-    user_id = _build_openlines_user_id(tg_user_id=tg_user_id, lead_id=lead_id)
-    chat_id = _build_openlines_chat_id(tg_user_id=tg_user_id, lead_id=lead_id)
+    user_id = _build_openlines_user_id(tg_user_id=tg_user_id, lead_id=lead_id, chat_token=chat_token)
+    chat_id = _build_openlines_chat_id(tg_user_id=tg_user_id, lead_id=lead_id, chat_token=chat_token)
 
     msg: Dict[str, Any] = {
         "user": {
