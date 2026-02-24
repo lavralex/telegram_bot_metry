@@ -302,34 +302,36 @@ async def ensure_event_bound(*, event_name: str, handler_url: str, trace_id: Opt
     if not handler_url:
         return {"success": False, "error": "handler_url is empty"}
 
+    def _handlers_from_event_get_result(current: Any) -> list[str]:
+        handlers: list[str] = []
+        if isinstance(current, dict):
+            existing = current.get(event_name)
+            if isinstance(existing, str):
+                handlers = [existing]
+            elif isinstance(existing, list):
+                handlers = [str(x) for x in existing]
+            elif existing is None:
+                handlers = []
+            else:
+                handlers = [str(existing)]
+        elif isinstance(current, list):
+            # Some Bitrix portals return event.get as a list of bindings.
+            for item in current:
+                if not isinstance(item, dict):
+                    continue
+                ev = str(item.get("EVENT") or item.get("event") or "").strip()
+                if ev != event_name:
+                    continue
+                handler = item.get("HANDLER") or item.get("handler")
+                if handler:
+                    handlers.append(str(handler))
+        return handlers
+
     res = await _post_bitrix("event.get", {}, trace_id=tid)
     if not res.get("success"):
         return res
 
-    current = res.get("result")
-
-    existing_handlers = []
-    if isinstance(current, dict):
-        existing = current.get(event_name)
-        if isinstance(existing, str):
-            existing_handlers = [existing]
-        elif isinstance(existing, list):
-            existing_handlers = [str(x) for x in existing]
-        elif existing is None:
-            existing_handlers = []
-        else:
-            existing_handlers = [str(existing)]
-    elif isinstance(current, list):
-        # Some Bitrix portals return event.get as a list of bindings.
-        for item in current:
-            if not isinstance(item, dict):
-                continue
-            ev = str(item.get("EVENT") or item.get("event") or "").strip()
-            if ev != event_name:
-                continue
-            handler = item.get("HANDLER") or item.get("handler")
-            if handler:
-                existing_handlers.append(str(handler))
+    existing_handlers = _handlers_from_event_get_result(res.get("result"))
 
     if any(h.rstrip("/") == handler_url.rstrip("/") for h in existing_handlers):
         logger.info("[%s] event already bound: %s -> %s", tid, event_name, handler_url)
@@ -341,8 +343,20 @@ async def ensure_event_bound(*, event_name: str, handler_url: str, trace_id: Opt
         err = str(bind_res.get("error") or "")
         desc = str(bind_res.get("error_description") or "")
         if err == "ERROR_CORE" and "already binded" in desc.lower():
-            logger.info("[%s] event already bound (bind conflict): %s -> %s", tid, event_name, handler_url)
-            return {"success": True, "bound": True, "already": True, "raw": bind_res.get("raw")}
+            # Defensive re-check: some portals return "already binded" even when bound to another URL.
+            recheck = await _post_bitrix("event.get", {}, trace_id=tid + "c")
+            if recheck.get("success"):
+                checked_handlers = _handlers_from_event_get_result(recheck.get("result"))
+                if any(h.rstrip("/") == handler_url.rstrip("/") for h in checked_handlers):
+                    logger.info("[%s] event already bound (bind conflict): %s -> %s", tid, event_name, handler_url)
+                    return {"success": True, "bound": True, "already": True, "raw": bind_res.get("raw")}
+                return {
+                    "success": False,
+                    "error": "EVENT_BINDED_TO_OTHER_HANDLER",
+                    "error_description": f"{event_name} is already bound, but not to {handler_url}",
+                    "raw": recheck.get("result"),
+                }
+            return recheck
         return bind_res
 
     logger.info("[%s] event bound: %s -> %s", tid, event_name, handler_url)

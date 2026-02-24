@@ -37,6 +37,11 @@ async def fallback_private(message: Message, state: FSMContext):
     if message.text and message.text.startswith("/"):
         return
 
+    # When OpenLines forwarding is enabled, UserMessageMiddleware already
+    # ensures lead + sends message to Bitrix. Avoid duplicate sends here.
+    if config.BITRIX24_ENABLED and getattr(config, "BITRIX24_OPENLINES_ENABLED", True):
+        return
+
     text = message.text or ""
     tg_user_id = message.from_user.id
     tg_username = message.from_user.username or ""

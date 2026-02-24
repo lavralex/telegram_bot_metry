@@ -403,7 +403,7 @@ def create_app(bot) -> FastAPI:
         )
         event = (str(event) if event is not None else "").strip()
 
-        logger.info(
+        logger.warning(
             "[%s] [BITRIX EVENT] ct=%s event=%s keys=%s",
             trace,
             (request.headers.get("content-type") or ""),
