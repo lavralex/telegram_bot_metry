@@ -203,10 +203,10 @@ async def process_contact_all(message: Message, state: FSMContext):
                     text=prefix + f"📞 Пользователь оставил телефон: {phone}",
                     message_id=f"contact_{message.message_id}",
                     unix_date=int(message.date.timestamp()),
-                    attach_crm=not ol_owns_lead,
+                    attach_crm=lead_id_for_ol > 0,
                     chat_token=(f"contact_{getattr(lead_obj, 'id', 0)}" if ol_owns_lead and lead_id_for_ol <= 0 else ""),
                 )
-                if ol_owns_lead and not lead_id_for_ol and ol_res.get("success"):
+                if lead_id_for_ol <= 0 and ol_res.get("success"):
                     im_chat_id = str(ol_res.get("im_chat_id") or "")
                     if im_chat_id:
                         enrich = await enrich_openlines_lead(

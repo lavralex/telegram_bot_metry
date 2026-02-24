@@ -83,12 +83,12 @@ async def fallback_private(message: Message, state: FSMContext):
                     text=text,
                     message_id=str(message.message_id),
                     unix_date=int(time.time()),
-                    attach_crm=not ol_owns_lead,
+                    attach_crm=lead_id_for_ol > 0,
                 )
 
                 if not res.get("success"):
                     logger.warning("⚠️ OpenLines send failed: %s", res)
-                elif ol_owns_lead and not lead_id_for_ol:
+                elif lead_id_for_ol <= 0:
                     im_chat_id = str(res.get("im_chat_id") or "")
                     if im_chat_id:
                         enrich = await enrich_openlines_lead(

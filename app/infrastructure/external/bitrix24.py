@@ -558,8 +558,14 @@ def _extract_im_ids_from_openlines_result(res: Dict[str, Any]) -> Dict[str, str]
     im = first.get("IM") or first.get("im") or {}
     if not isinstance(im, dict):
         im = {}
-    chat_id = str(im.get("CHAT_ID") or im.get("chat_id") or "").strip()
-    message_id = str(im.get("MESSAGE_ID") or im.get("message_id") or "").strip()
+    chat_id = str(im.get("CHAT_ID") or im.get("chat_id") or first.get("CHAT_ID") or first.get("chat_id") or "").strip()
+    message_id = str(
+        im.get("MESSAGE_ID")
+        or im.get("message_id")
+        or first.get("MESSAGE_ID")
+        or first.get("message_id")
+        or ""
+    ).strip()
     return {"im_chat_id": chat_id, "im_message_id": message_id}
 
 

@@ -182,7 +182,7 @@ class UserMessageMiddleware(BaseMiddleware):
                         text=prefix + message_text,
                         message_id=str(message.message_id),
                         unix_date=int(message.date.timestamp()),
-                        attach_crm=not ol_owns_lead,
+                        attach_crm=lead_id_for_ol > 0,
                         chat_token=(f"lead_{lead.id}" if ol_owns_lead and lead_id_for_ol <= 0 else ""),
                         trace_id=trace_id + "O",
                     )
@@ -191,7 +191,7 @@ class UserMessageMiddleware(BaseMiddleware):
                         ol_error = str(ol_res.get("error") or "unknown error")
                         logger.warning("[%s] OpenLines send failed: %s", trace_id, ol_error)
                     else:
-                        if ol_owns_lead and not lead_id_for_ol:
+                        if lead_id_for_ol <= 0:
                             im_chat_id = str(ol_res.get("im_chat_id") or "")
                             if im_chat_id:
                                 enrich = await enrich_openlines_lead(
