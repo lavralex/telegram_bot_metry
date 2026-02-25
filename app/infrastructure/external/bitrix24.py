@@ -718,6 +718,8 @@ async def find_lead_id_by_phone(
                 items = raw_items
         openlines_candidate: Optional[int] = None
         newest_candidate: Optional[int] = None
+        openlines_candidate_no_date: Optional[int] = None
+        newest_candidate_no_date: Optional[int] = None
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -733,12 +735,18 @@ async def find_lead_id_by_phone(
 
                 if date_ok and (newest_candidate is None or cur_id > newest_candidate):
                     newest_candidate = cur_id
+                if created_dt is None and (newest_candidate_no_date is None or cur_id > newest_candidate_no_date):
+                    newest_candidate_no_date = cur_id
 
                 title = str(item.get("TITLE") or "").lower()
                 source_id = str(item.get("SOURCE_ID") or "").lower()
-                if date_ok and (("openline" in source_id) or ("openline" in title)):
+                is_openlines_like = ("openline" in source_id) or ("openline" in title)
+                if date_ok and is_openlines_like:
                     if openlines_candidate is None or cur_id > openlines_candidate:
                         openlines_candidate = cur_id
+                if created_dt is None and is_openlines_like:
+                    if openlines_candidate_no_date is None or cur_id > openlines_candidate_no_date:
+                        openlines_candidate_no_date = cur_id
             except Exception:
                 continue
         if openlines_candidate:
@@ -751,6 +759,32 @@ async def find_lead_id_by_phone(
             return {"success": True, "lead_id": int(newest_candidate), "method": "lead.list.newest"}
 
         if strict_recent and created_after is not None:
+            # Some portals don't return DATE_CREATE in lead.list for this query.
+            # In that case, prefer the newest ID instead of silently skipping enrichment.
+            if openlines_candidate_no_date:
+                if _dbg():
+                    logger.warning(
+                        "[%s] phone->lead strict_recent fallback (no DATE_CREATE) openlines lead_id=%s",
+                        tid,
+                        openlines_candidate_no_date,
+                    )
+                return {
+                    "success": True,
+                    "lead_id": int(openlines_candidate_no_date),
+                    "method": "lead.list.openlines.no_date",
+                }
+            if newest_candidate_no_date:
+                if _dbg():
+                    logger.warning(
+                        "[%s] phone->lead strict_recent fallback (no DATE_CREATE) newest lead_id=%s",
+                        tid,
+                        newest_candidate_no_date,
+                    )
+                return {
+                    "success": True,
+                    "lead_id": int(newest_candidate_no_date),
+                    "method": "lead.list.newest.no_date",
+                }
             return {
                 "success": False,
                 "error": "LEAD_NOT_FOUND_BY_PHONE_RECENT",
