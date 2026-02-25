@@ -198,21 +198,30 @@ class UserMessageMiddleware(BaseMiddleware):
                     else:
                         if lead_id_for_ol <= 0:
                             enrich: Dict[str, Any] = {"success": False, "error": "NO_LEAD_ID_OR_CHAT_ID"}
-                            ol_lead_id = int(ol_res.get("ol_lead_id") or 0)
-                            if ol_lead_id > 0:
+                            local_bitrix_id = int(getattr(lead, "bitrix_lead_id", 0) or 0)
+                            if ol_owns_lead and local_bitrix_id > 0:
+                                logger.info("[%s] OL enrich target from local lead binding: %s", trace_id, local_bitrix_id)
                                 enrich = await enrich_openlines_lead_by_id(
-                                    lead_id=ol_lead_id,
+                                    lead_id=local_bitrix_id,
                                     fields=bitrix_fields,
-                                    trace_id=trace_id + "E",
+                                    trace_id=trace_id + "EL",
                                 )
                             else:
-                                lookup_chat_id = str(ol_res.get("im_chat_id") or ol_res.get("connector_chat_id") or "")
-                                if lookup_chat_id:
-                                    enrich = await enrich_openlines_lead(
-                                        im_chat_id=lookup_chat_id,
+                                ol_lead_id = int(ol_res.get("ol_lead_id") or 0)
+                                if ol_lead_id > 0:
+                                    enrich = await enrich_openlines_lead_by_id(
+                                        lead_id=ol_lead_id,
                                         fields=bitrix_fields,
                                         trace_id=trace_id + "E",
                                     )
+                                else:
+                                    lookup_chat_id = str(ol_res.get("im_chat_id") or ol_res.get("connector_chat_id") or "")
+                                    if lookup_chat_id:
+                                        enrich = await enrich_openlines_lead(
+                                            im_chat_id=lookup_chat_id,
+                                            fields=bitrix_fields,
+                                            trace_id=trace_id + "E",
+                                        )
 
                             if enrich.get("success"):
                                 ensured_id = int(enrich["lead_id"])
