@@ -103,10 +103,10 @@ async def fallback_private(message: Message, state: FSMContext):
                             trace_id=f"fallback_{message.message_id}",
                         )
                     else:
-                        im_chat_id = str(res.get("im_chat_id") or "")
-                        if im_chat_id:
+                        lookup_chat_id = str(res.get("im_chat_id") or res.get("connector_chat_id") or "")
+                        if lookup_chat_id:
                             enrich = await enrich_openlines_lead(
-                                im_chat_id=im_chat_id,
+                                im_chat_id=lookup_chat_id,
                                 fields=bitrix_fields,
                                 trace_id=f"fallback_{message.message_id}",
                             )
