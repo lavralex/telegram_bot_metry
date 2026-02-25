@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 _DEDUP_TTL_SEC = 600
 _processed: Dict[str, float] = {}
+_TEXT_DEDUP_TTL_SEC = 90
+_recent_texts: Dict[str, float] = {}
 
 
 def _now() -> float:
@@ -32,6 +34,9 @@ def _dedup_gc() -> None:
     for k, ts in list(_processed.items()):
         if (t - ts) >= _DEDUP_TTL_SEC:
             _processed.pop(k, None)
+    for k, ts in list(_recent_texts.items()):
+        if (t - ts) >= _TEXT_DEDUP_TTL_SEC:
+            _recent_texts.pop(k, None)
 
 
 def _dedup_key(msg: Dict[str, Any]) -> Optional[str]:
@@ -53,6 +58,22 @@ def _dedup_seen(key: str) -> bool:
 
 def _dedup_mark(key: str) -> None:
     _processed[key] = _now()
+
+
+def _text_dedup_key(*, user_id: int, text: str) -> str:
+    norm = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    return f"{int(user_id)}:{norm}"
+
+
+def _text_dedup_seen(key: str) -> bool:
+    ts = _recent_texts.get(key)
+    if ts is None:
+        return False
+    return (_now() - ts) < _TEXT_DEDUP_TTL_SEC
+
+
+def _text_dedup_mark(key: str) -> None:
+    _recent_texts[key] = _now()
 
 
 def _expected_connector() -> str:
@@ -168,6 +189,22 @@ def _extract_manager_name_from_bbcode(text: str) -> tuple[str | None, str]:
     manager_name = (m.group(1) or "").strip()
     body = _normalize_bitrix_text(m.group(2) or "")
     return (manager_name or None), body
+
+
+def _normalize_manager_header_name(name: str) -> str:
+    n = str(name or "").strip()
+    n = re.sub(r"\s+", " ", n)
+    n = n.rstrip(":").strip()
+
+    # Avoid "Manager Manager" and similar duplicate prefixes.
+    n = re.sub(r"^(manager)\s+\1\b", r"\1", n, flags=re.IGNORECASE)
+    n = re.sub(r"^(?:manager|менеджер)\s+(?=manager\b|менеджер\b)", "", n, flags=re.IGNORECASE)
+
+    # If name already starts with "Manager", keep only the rest for header composition.
+    n = re.sub(r"^(?:manager|менеджер)\s+", "", n, flags=re.IGNORECASE).strip()
+    if not n:
+        return "Manager"
+    return n
 
 
 async def _send_to_tg(
@@ -517,8 +554,16 @@ def create_app(bot) -> FastAPI:
                     logger.warning("[%s] [BITRIX EVENT] empty text after normalize", trace)
                     continue
 
-                header_name = manager_name or author
-                out_text = f"Manager {header_name}:\n\n{clean_text}"
+                header_name = _normalize_manager_header_name(manager_name or author)
+                if header_name.lower() == "manager":
+                    out_text = f"Manager:\n\n{clean_text}"
+                else:
+                    out_text = f"Manager {header_name}:\n\n{clean_text}"
+
+                tkey = _text_dedup_key(user_id=user_id, text=out_text)
+                if _text_dedup_seen(tkey):
+                    logger.info("[%s] [BITRIX EVENT] text dedup skip user_id=%s", trace, user_id)
+                    continue
 
                 data_root = payload.get("data") if isinstance(payload.get("data"), dict) else {}
                 connector = str(
@@ -545,6 +590,7 @@ def create_app(bot) -> FastAPI:
 
                 if key:
                     _dedup_mark(key)
+                _text_dedup_mark(tkey)
 
                 asyncio.create_task(
                     _send_to_tg(
