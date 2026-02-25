@@ -79,6 +79,8 @@ async def fallback_private(message: Message, state: FSMContext):
 
         if config.BITRIX24_ENABLED and getattr(config, "BITRIX24_OPENLINES_ENABLED", True):
             lead_id_for_ol = int(ensured_bitrix_id) if ensured_bitrix_id else 0
+            if ol_owns_lead:
+                lead_id_for_ol = 0
             if lead_id_for_ol <= 0 and not ol_owns_lead:
                 logger.warning("⚠️ Skip OpenLines send: missing bitrix_lead_id for local lead_id=%s", getattr(lead_obj, "id", None))
             else:
@@ -90,8 +92,8 @@ async def fallback_private(message: Message, state: FSMContext):
                     message_id=str(message.message_id),
                     unix_date=int(time.time()),
                     attach_crm=lead_id_for_ol > 0,
+                    chat_token=(f"lead_{getattr(lead_obj, 'id', 0)}" if ol_owns_lead else ""),
                 )
-
                 if not res.get("success"):
                     logger.warning("⚠️ OpenLines send failed: %s", res)
                 elif lead_id_for_ol <= 0:
@@ -145,4 +147,5 @@ async def fallback_private(message: Message, state: FSMContext):
             lead_repo.db.close()
         except Exception:
             pass
+
 

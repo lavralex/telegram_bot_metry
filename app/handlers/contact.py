@@ -195,6 +195,9 @@ async def process_contact_all(message: Message, state: FSMContext):
     if config.BITRIX24_ENABLED and getattr(config, "BITRIX24_OPENLINES_ENABLED", True):
         try:
             lead_id_for_ol = int(ensured_bitrix_id) if ensured_bitrix_id else 0
+            if ol_owns_lead:
+                # In OL-owned mode route strictly by chat token to avoid sticking to stale CRM lead id.
+                lead_id_for_ol = 0
             seg = user_data.get("segment") or getattr(lead_obj, "segment", None) or "unknown"
             utm = user_data.get("utm_source") or getattr(lead_obj, "utm_source", None) or "organic"
             prefix = f"[segment={seg}, utm={utm}] "
@@ -210,7 +213,7 @@ async def process_contact_all(message: Message, state: FSMContext):
                     message_id=f"contact_{message.message_id}",
                     unix_date=int(message.date.timestamp()),
                     attach_crm=lead_id_for_ol > 0,
-                    chat_token=(f"lead_{getattr(lead_obj, 'id', 0)}" if ol_owns_lead and lead_id_for_ol <= 0 else ""),
+                    chat_token=(f"lead_{getattr(lead_obj, 'id', 0)}" if ol_owns_lead else ""),
                 )
                 if lead_id_for_ol <= 0 and ol_res.get("success"):
                     enrich: Dict[str, Any] = {"success": False, "error": "NO_LEAD_ID_OR_CHAT_ID"}

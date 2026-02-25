@@ -675,27 +675,13 @@ async def find_lead_id_by_phone(phone: str, *, trace_id: Optional[str] = None) -
     if not variants:
         return {"success": False, "error": "phone is empty"}
 
-    # Preferred way: CRM duplicate lookup by communication.
-    dup = await _post_bitrix(
-        "crm.duplicate.findbycomm",
-        {"type": "PHONE", "values": variants},
-        trace_id=tid + "D",
-    )
-    if dup.get("success"):
-        lead_ids = _extract_lead_ids_from_duplicate_result(dup.get("result"))
-        if lead_ids:
-            lead_id = max(lead_ids)
-            if _dbg():
-                logger.warning("[%s] phone->lead resolved by duplicate: phone=%s lead_id=%s", tid, variants[0], lead_id)
-            return {"success": True, "lead_id": int(lead_id), "method": "duplicate", "raw": dup.get("result")}
-
-    # Fallback: direct lead list by phone filter.
+    # Prefer newest lead by phone and favor OpenLines titles/sources.
     lst = await _post_bitrix(
         "crm.lead.list",
         {
             "order": {"ID": "DESC"},
             "filter": {"PHONE": variants[0]},
-            "select": ["ID"],
+            "select": ["ID", "TITLE", "SOURCE_ID", "DATE_CREATE"],
             "start": 0,
         },
         trace_id=tid + "L",
@@ -709,13 +695,44 @@ async def find_lead_id_by_phone(phone: str, *, trace_id: Optional[str] = None) -
             raw_items = result.get("result")
             if isinstance(raw_items, list):
                 items = raw_items
+        openlines_candidate: Optional[int] = None
+        newest_candidate: Optional[int] = None
         for item in items:
             if not isinstance(item, dict):
                 continue
             try:
-                return {"success": True, "lead_id": int(item.get("ID")), "method": "lead.list", "raw": item}
+                cur_id = int(item.get("ID"))
+                if newest_candidate is None:
+                    newest_candidate = cur_id
+                title = str(item.get("TITLE") or "").lower()
+                source_id = str(item.get("SOURCE_ID") or "").lower()
+                if ("открытая линия" in title) or ("openline" in source_id):
+                    openlines_candidate = cur_id
+                    break
             except Exception:
                 continue
+        if openlines_candidate:
+            if _dbg():
+                logger.warning("[%s] phone->lead resolved by lead.list(openlines): phone=%s lead_id=%s", tid, variants[0], openlines_candidate)
+            return {"success": True, "lead_id": int(openlines_candidate), "method": "lead.list.openlines"}
+        if newest_candidate:
+            if _dbg():
+                logger.warning("[%s] phone->lead resolved by lead.list(newest): phone=%s lead_id=%s", tid, variants[0], newest_candidate)
+            return {"success": True, "lead_id": int(newest_candidate), "method": "lead.list.newest"}
+
+    # Final fallback: CRM duplicate lookup by communication.
+    dup = await _post_bitrix(
+        "crm.duplicate.findbycomm",
+        {"type": "PHONE", "values": variants},
+        trace_id=tid + "D",
+    )
+    if dup.get("success"):
+        lead_ids = _extract_lead_ids_from_duplicate_result(dup.get("result"))
+        if lead_ids:
+            lead_id = max(lead_ids)
+            if _dbg():
+                logger.warning("[%s] phone->lead resolved by duplicate: phone=%s lead_id=%s", tid, variants[0], lead_id)
+            return {"success": True, "lead_id": int(lead_id), "method": "duplicate", "raw": dup.get("result")}
 
     return {"success": False, "error": "LEAD_NOT_FOUND_BY_PHONE", "phone": variants[0]}
 

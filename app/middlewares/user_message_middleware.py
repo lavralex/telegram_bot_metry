@@ -173,6 +173,9 @@ class UserMessageMiddleware(BaseMiddleware):
                 utm = state_data.get("utm_source") or getattr(lead, "utm_source", None) or "organic"
                 prefix = f"[segment={seg}, utm={utm}] "
                 lead_id_for_ol = int(getattr(lead, "bitrix_lead_id", 0) or 0)
+                if ol_owns_lead:
+                    # In OL-owned mode always keep routing by local lead chat token.
+                    lead_id_for_ol = 0
 
                 if lead_id_for_ol <= 0 and not ol_owns_lead:
                     logger.warning("[%s] Skip OpenLines send: missing bitrix_lead_id for local lead_id=%s", trace_id, lead.id)
@@ -185,7 +188,7 @@ class UserMessageMiddleware(BaseMiddleware):
                         message_id=str(message.message_id),
                         unix_date=int(message.date.timestamp()),
                         attach_crm=lead_id_for_ol > 0,
-                        chat_token=(f"lead_{lead.id}" if ol_owns_lead and lead_id_for_ol <= 0 else ""),
+                        chat_token=(f"lead_{lead.id}" if ol_owns_lead else ""),
                         trace_id=trace_id + "O",
                     )
 
