@@ -21,7 +21,12 @@ from app.application.services.lead_service import LeadService
 from app.keyboards.contact import get_subscribe_keyboard
 
 from app.infrastructure.database.models import Lead
-from app.infrastructure.external.bitrix24 import ensure_bitrix_lead, send_message_to_openlines, enrich_openlines_lead
+from app.infrastructure.external.bitrix24 import (
+    ensure_bitrix_lead,
+    send_message_to_openlines,
+    enrich_openlines_lead,
+    enrich_openlines_lead_by_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -207,24 +212,34 @@ async def process_contact_all(message: Message, state: FSMContext):
                     chat_token=(f"lead_{getattr(lead_obj, 'id', 0)}" if ol_owns_lead and lead_id_for_ol <= 0 else ""),
                 )
                 if lead_id_for_ol <= 0 and ol_res.get("success"):
-                    im_chat_id = str(ol_res.get("im_chat_id") or "")
-                    if im_chat_id:
-                        enrich = await enrich_openlines_lead(
-                            im_chat_id=im_chat_id,
+                    enrich: Dict[str, Any] = {"success": False, "error": "NO_LEAD_ID_OR_CHAT_ID"}
+                    ol_lead_id = int(ol_res.get("ol_lead_id") or 0)
+                    if ol_lead_id > 0:
+                        enrich = await enrich_openlines_lead_by_id(
+                            lead_id=ol_lead_id,
                             fields=bitrix_fields,
                             trace_id=f"contact_{message.message_id}",
                         )
-                        if enrich.get("success"):
-                            ensured_bitrix_id = int(enrich["lead_id"])
-                            lead_repo3 = get_lead_repository()
-                            try:
-                                lead_repo3.set_bitrix_lead_id(lead_obj.id, ensured_bitrix_id)
-                            finally:
-                                lead_repo3.db.close()
-                            lead_obj.bitrix_lead_id = ensured_bitrix_id
-                            logger.info("✅ OpenLines lead enriched: %s", ensured_bitrix_id)
-                        else:
-                            logger.warning("⚠️ OpenLines lead enrich failed: %s", enrich)
+                    else:
+                        im_chat_id = str(ol_res.get("im_chat_id") or "")
+                        if im_chat_id:
+                            enrich = await enrich_openlines_lead(
+                                im_chat_id=im_chat_id,
+                                fields=bitrix_fields,
+                                trace_id=f"contact_{message.message_id}",
+                            )
+
+                    if enrich.get("success"):
+                        ensured_bitrix_id = int(enrich["lead_id"])
+                        lead_repo3 = get_lead_repository()
+                        try:
+                            lead_repo3.set_bitrix_lead_id(lead_obj.id, ensured_bitrix_id)
+                        finally:
+                            lead_repo3.db.close()
+                        lead_obj.bitrix_lead_id = ensured_bitrix_id
+                        logger.info("✅ OpenLines lead enriched: %s", ensured_bitrix_id)
+                    else:
+                        logger.warning("⚠️ OpenLines lead enrich failed: %s", enrich)
         except Exception as e:
             logger.warning("⚠️ Не удалось отправить сообщение в OpenLines: %s", e)
 

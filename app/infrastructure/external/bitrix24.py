@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
 from datetime import datetime
@@ -569,6 +570,31 @@ def _extract_im_ids_from_openlines_result(res: Dict[str, Any]) -> Dict[str, str]
     return {"im_chat_id": chat_id, "im_message_id": message_id}
 
 
+def _extract_lead_id_from_openlines_result(res: Dict[str, Any]) -> int:
+    # Try first result item, then whole result as fallback.
+    first = _extract_first_result_item(res)
+    lead_id = _find_int_by_keys(first, {"lead", "lead_id", "crm_lead_id"})
+    if lead_id:
+        return int(lead_id)
+
+    result = res.get("result")
+    lead_id2 = _find_int_by_keys(result, {"lead", "lead_id", "crm_lead_id"})
+    if lead_id2:
+        return int(lead_id2)
+
+    # Some payloads can carry CRM entity like "L_12345"
+    if isinstance(first, dict):
+        raw_entity = first.get("CRM_ENTITY") or first.get("crm_entity")
+        if raw_entity and isinstance(raw_entity, str):
+            m = re.search(r"[Ll]_(\d+)", raw_entity)
+            if m:
+                try:
+                    return int(m.group(1))
+                except Exception:
+                    pass
+    return 0
+
+
 def _find_int_by_keys(obj: Any, keys: set[str]) -> Optional[int]:
     if isinstance(obj, dict):
         for k, v in obj.items():
@@ -655,6 +681,41 @@ async def enrich_openlines_lead(
     if _dbg():
         logger.warning("[%s] OL enrich update OK lead_id=%s", tid, lead_id)
     return {"success": True, "lead_id": lead_id, "updated": True, "raw": upd.get("result")}
+
+
+async def enrich_openlines_lead_by_id(
+    *,
+    lead_id: int,
+    fields: Dict[str, Any],
+    trace_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    tid = trace_id or uuid.uuid4().hex[:12]
+    if int(lead_id) <= 0:
+        return {"success": False, "error": "lead_id is invalid"}
+
+    upd_fields = dict(fields or {})
+    source_id = _lead_source_id()
+    if source_id and "SOURCE_ID" not in upd_fields:
+        upd_fields["SOURCE_ID"] = source_id
+    upd_fields.setdefault("OPENED", "Y")
+    upd_fields.setdefault("STATUS_ID", "NEW")
+    upd_fields.setdefault("timestamp", datetime.now().isoformat())
+
+    if _dbg():
+        logger.warning(
+            "[%s] OL enrich by id=%s fields_keys=%s comments_preview=%s",
+            tid,
+            lead_id,
+            sorted(list(upd_fields.keys())),
+            _truncate(str(upd_fields.get("COMMENTS", "")), 300),
+        )
+
+    upd = await _post_bitrix("crm.lead.update", {"id": int(lead_id), "fields": upd_fields}, trace_id=tid + "U")
+    if not upd.get("success"):
+        if _dbg():
+            logger.warning("[%s] OL enrich by id failed: %s", tid, _truncate(_safe_json(upd), _dbg_limit()))
+        return upd
+    return {"success": True, "lead_id": int(lead_id), "updated": True, "raw": upd.get("result")}
 
 
 async def send_message_to_openlines(
@@ -759,9 +820,10 @@ async def send_message_to_openlines(
         if inner is True:
             logger.warning("[%s] OpenLines send OK (bool result)", tid)
             ids = _extract_im_ids_from_openlines_result(res)
+            ol_lead_id = _extract_lead_id_from_openlines_result(res)
             if _dbg():
-                logger.warning("[%s] OpenLines send IDs (bool result)=%s", tid, ids)
-            return {"success": True, **ids}
+                logger.warning("[%s] OpenLines send IDs (bool result)=%s lead_id=%s", tid, ids, ol_lead_id)
+            return {"success": True, "ol_lead_id": ol_lead_id, **ids}
         logger.error("[%s] OpenLines rejected message: result=false", tid)
         return {"success": False, "error": "IMCONNECTOR_MESSAGE_FAILED", "raw": res}
 
@@ -774,14 +836,16 @@ async def send_message_to_openlines(
             if first.get("SUCCESS") is True:
                 logger.warning("[%s] OpenLines send OK (DATA.RESULT)", tid)
                 ids = _extract_im_ids_from_openlines_result(res)
+                ol_lead_id = _extract_lead_id_from_openlines_result(res)
                 if _dbg():
                     logger.warning(
-                        "[%s] OpenLines send IDs=%s first_result=%s",
+                        "[%s] OpenLines send IDs=%s lead_id=%s first_result=%s",
                         tid,
                         ids,
+                        ol_lead_id,
                         _truncate(_safe_json(first), _dbg_limit()),
                     )
-                return {"success": True, **ids}
+                return {"success": True, "ol_lead_id": ol_lead_id, **ids}
 
             logger.error(
                 "[%s] OpenLines rejected message: %s",
@@ -804,9 +868,10 @@ async def send_message_to_openlines(
                     if isinstance(retry_inner, bool) and retry_inner is True:
                         logger.warning("[%s] OpenLines send OK on retry (bool result)", tid)
                         ids = _extract_im_ids_from_openlines_result(retry_res)
+                        ol_lead_id = _extract_lead_id_from_openlines_result(retry_res)
                         if _dbg():
-                            logger.warning("[%s] OpenLines retry IDs (bool result)=%s", tid, ids)
-                        return {"success": True, **ids}
+                            logger.warning("[%s] OpenLines retry IDs (bool result)=%s lead_id=%s", tid, ids, ol_lead_id)
+                        return {"success": True, "ol_lead_id": ol_lead_id, **ids}
                     if isinstance(retry_inner, dict):
                         retry_data = retry_inner.get("DATA") or {}
                         retry_results = retry_data.get("RESULT") or []
@@ -815,11 +880,13 @@ async def send_message_to_openlines(
                             if r0.get("SUCCESS") is True:
                                 logger.warning("[%s] OpenLines send OK on retry (DATA.RESULT)", tid)
                                 ids = _extract_im_ids_from_openlines_result(retry_res)
-                                return {"success": True, **ids}
+                                ol_lead_id = _extract_lead_id_from_openlines_result(retry_res)
+                                return {"success": True, "ol_lead_id": ol_lead_id, **ids}
                         if retry_inner.get("SUCCESS") is True:
                             logger.warning("[%s] OpenLines send OK on retry (SUCCESS)", tid)
                             ids = _extract_im_ids_from_openlines_result(retry_res)
-                            return {"success": True, **ids}
+                            ol_lead_id = _extract_lead_id_from_openlines_result(retry_res)
+                            return {"success": True, "ol_lead_id": ol_lead_id, **ids}
 
             return {
                 "success": False,
@@ -830,7 +897,8 @@ async def send_message_to_openlines(
         if inner.get("SUCCESS") is True:
             logger.warning("[%s] OpenLines send OK (SUCCESS)", tid)
             ids = _extract_im_ids_from_openlines_result(res)
-            return {"success": True, **ids}
+            ol_lead_id = _extract_lead_id_from_openlines_result(res)
+            return {"success": True, "ol_lead_id": ol_lead_id, **ids}
 
         if "SUCCESS" in inner and inner.get("SUCCESS") is not True:
             logger.error("[%s] OpenLines rejected message: %s", tid, _truncate(_safe_json(inner), _dbg_limit()))

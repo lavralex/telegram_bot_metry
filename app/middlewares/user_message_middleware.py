@@ -19,6 +19,7 @@ from app.infrastructure.external.bitrix24 import (
     ensure_bitrix_lead,
     send_message_to_openlines,
     enrich_openlines_lead,
+    enrich_openlines_lead_by_id,
 )
 
 logger = logging.getLogger("bot.messages")
@@ -192,20 +193,30 @@ class UserMessageMiddleware(BaseMiddleware):
                         logger.warning("[%s] OpenLines send failed: %s", trace_id, ol_error)
                     else:
                         if lead_id_for_ol <= 0:
-                            im_chat_id = str(ol_res.get("im_chat_id") or "")
-                            if im_chat_id:
-                                enrich = await enrich_openlines_lead(
-                                    im_chat_id=im_chat_id,
+                            enrich: Dict[str, Any] = {"success": False, "error": "NO_LEAD_ID_OR_CHAT_ID"}
+                            ol_lead_id = int(ol_res.get("ol_lead_id") or 0)
+                            if ol_lead_id > 0:
+                                enrich = await enrich_openlines_lead_by_id(
+                                    lead_id=ol_lead_id,
                                     fields=bitrix_fields,
                                     trace_id=trace_id + "E",
                                 )
-                                if enrich.get("success"):
-                                    ensured_id = int(enrich["lead_id"])
-                                    lead_repo.set_bitrix_lead_id(lead.id, ensured_id)
-                                    lead.bitrix_lead_id = ensured_id
-                                    logger.info("[%s] OpenLines lead enriched: %s", trace_id, ensured_id)
-                                else:
-                                    logger.warning("[%s] OpenLines lead enrich failed: %s", trace_id, enrich)
+                            else:
+                                im_chat_id = str(ol_res.get("im_chat_id") or "")
+                                if im_chat_id:
+                                    enrich = await enrich_openlines_lead(
+                                        im_chat_id=im_chat_id,
+                                        fields=bitrix_fields,
+                                        trace_id=trace_id + "E",
+                                    )
+
+                            if enrich.get("success"):
+                                ensured_id = int(enrich["lead_id"])
+                                lead_repo.set_bitrix_lead_id(lead.id, ensured_id)
+                                lead.bitrix_lead_id = ensured_id
+                                logger.info("[%s] OpenLines lead enriched: %s", trace_id, ensured_id)
+                            else:
+                                logger.warning("[%s] OpenLines lead enrich failed: %s", trace_id, enrich)
                         ol_sent_ok = True
                         logger.info("[%s] OpenLines send OK", trace_id)
 
