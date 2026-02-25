@@ -702,13 +702,13 @@ async def find_lead_id_by_phone(phone: str, *, trace_id: Optional[str] = None) -
                 continue
             try:
                 cur_id = int(item.get("ID"))
-                if newest_candidate is None:
+                if newest_candidate is None or cur_id > newest_candidate:
                     newest_candidate = cur_id
                 title = str(item.get("TITLE") or "").lower()
                 source_id = str(item.get("SOURCE_ID") or "").lower()
                 if ("открытая линия" in title) or ("openline" in source_id):
-                    openlines_candidate = cur_id
-                    break
+                    if openlines_candidate is None or cur_id > openlines_candidate:
+                        openlines_candidate = cur_id
             except Exception:
                 continue
         if openlines_candidate:
