@@ -5,7 +5,7 @@ import logging
 import re
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
@@ -669,7 +669,28 @@ def _extract_lead_ids_from_duplicate_result(result: Any) -> list[int]:
     return ids
 
 
-async def find_lead_id_by_phone(phone: str, *, trace_id: Optional[str] = None) -> Dict[str, Any]:
+def _parse_bitrix_datetime(value: Any) -> Optional[datetime]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(raw)
+    except Exception:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+async def find_lead_id_by_phone(
+    phone: str,
+    *,
+    trace_id: Optional[str] = None,
+    created_after: Optional[datetime] = None,
+    strict_recent: bool = False,
+) -> Dict[str, Any]:
     tid = trace_id or uuid.uuid4().hex[:12]
     variants = _normalize_phone_variants(phone)
     if not variants:
@@ -702,11 +723,20 @@ async def find_lead_id_by_phone(phone: str, *, trace_id: Optional[str] = None) -
                 continue
             try:
                 cur_id = int(item.get("ID"))
-                if newest_candidate is None or cur_id > newest_candidate:
+                created_dt = _parse_bitrix_datetime(item.get("DATE_CREATE"))
+                date_ok = True
+                if created_after is not None:
+                    if created_dt is None:
+                        date_ok = False
+                    else:
+                        date_ok = created_dt >= created_after
+
+                if date_ok and (newest_candidate is None or cur_id > newest_candidate):
                     newest_candidate = cur_id
+
                 title = str(item.get("TITLE") or "").lower()
                 source_id = str(item.get("SOURCE_ID") or "").lower()
-                if ("открытая линия" in title) or ("openline" in source_id):
+                if date_ok and (("openline" in source_id) or ("openline" in title)):
                     if openlines_candidate is None or cur_id > openlines_candidate:
                         openlines_candidate = cur_id
             except Exception:
@@ -719,6 +749,22 @@ async def find_lead_id_by_phone(phone: str, *, trace_id: Optional[str] = None) -
             if _dbg():
                 logger.warning("[%s] phone->lead resolved by lead.list(newest): phone=%s lead_id=%s", tid, variants[0], newest_candidate)
             return {"success": True, "lead_id": int(newest_candidate), "method": "lead.list.newest"}
+
+        if strict_recent and created_after is not None:
+            return {
+                "success": False,
+                "error": "LEAD_NOT_FOUND_BY_PHONE_RECENT",
+                "phone": variants[0],
+                "created_after": created_after.isoformat(),
+            }
+
+    if strict_recent and created_after is not None:
+        return {
+            "success": False,
+            "error": "LEAD_NOT_FOUND_BY_PHONE_RECENT",
+            "phone": variants[0],
+            "created_after": created_after.isoformat(),
+        }
 
     # Final fallback: CRM duplicate lookup by communication.
     dup = await _post_bitrix(
@@ -742,9 +788,16 @@ async def enrich_openlines_lead_by_phone(
     phone: str,
     fields: Dict[str, Any],
     trace_id: Optional[str] = None,
+    created_after: Optional[datetime] = None,
+    strict_recent: bool = False,
 ) -> Dict[str, Any]:
     tid = trace_id or uuid.uuid4().hex[:12]
-    resolved = await find_lead_id_by_phone(phone, trace_id=tid + "P")
+    resolved = await find_lead_id_by_phone(
+        phone,
+        trace_id=tid + "P",
+        created_after=created_after,
+        strict_recent=strict_recent,
+    )
     if not resolved.get("success"):
         return resolved
     return await enrich_openlines_lead_by_id(

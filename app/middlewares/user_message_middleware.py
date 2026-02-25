@@ -1,5 +1,6 @@
 import logging
 import uuid
+from datetime import datetime, timedelta
 from typing import Callable, Dict, Any, Awaitable, Optional
 
 from aiogram import BaseMiddleware
@@ -235,6 +236,8 @@ class UserMessageMiddleware(BaseMiddleware):
                                         phone=lead_phone,
                                         fields=bitrix_fields,
                                         trace_id=trace_id + "P",
+                                        created_after=datetime.utcnow() - timedelta(minutes=10),
+                                        strict_recent=True,
                                     )
                                     if by_phone.get("success"):
                                         ensured_id = int(by_phone["lead_id"])

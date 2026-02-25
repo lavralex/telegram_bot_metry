@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timedelta
 
 from aiogram import Router, F
 from aiogram.types import Message
@@ -125,6 +126,8 @@ async def fallback_private(message: Message, state: FSMContext):
                                 phone=lead_phone,
                                 fields=bitrix_fields,
                                 trace_id=f"fallback_{message.message_id}P",
+                                created_after=datetime.utcnow() - timedelta(minutes=10),
+                                strict_recent=True,
                             )
                             if by_phone.get("success"):
                                 ensured_bitrix_id = int(by_phone["lead_id"])
