@@ -126,7 +126,7 @@ async def fallback_private(message: Message, state: FSMContext):
                                 phone=lead_phone,
                                 fields=bitrix_fields,
                                 trace_id=f"fallback_{message.message_id}P",
-                                created_after=datetime.utcnow() - timedelta(minutes=10),
+                                created_after=datetime.utcnow() - timedelta(minutes=30),
                                 strict_recent=True,
                             )
                             if by_phone.get("success"):

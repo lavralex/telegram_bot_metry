@@ -697,25 +697,40 @@ async def find_lead_id_by_phone(
         return {"success": False, "error": "phone is empty"}
 
     # Prefer newest lead by phone and favor OpenLines titles/sources.
-    lst = await _post_bitrix(
-        "crm.lead.list",
-        {
-            "order": {"ID": "DESC"},
-            "filter": {"PHONE": variants[0]},
-            "select": ["ID", "TITLE", "SOURCE_ID", "DATE_CREATE"],
-            "start": 0,
-        },
-        trace_id=tid + "L",
-    )
-    if lst.get("success"):
+    items: list[Any] = []
+    for idx, phone_filter in enumerate(variants):
+        lst = await _post_bitrix(
+            "crm.lead.list",
+            {
+                "order": {"ID": "DESC"},
+                "filter": {"PHONE": phone_filter},
+                "select": ["ID", "TITLE", "SOURCE_ID", "DATE_CREATE"],
+                "start": 0,
+            },
+            trace_id=f"{tid}L{idx}",
+        )
+        if not lst.get("success"):
+            continue
         result = lst.get("result")
-        items: list[Any] = []
         if isinstance(result, list):
-            items = result
+            items.extend(result)
         elif isinstance(result, dict):
             raw_items = result.get("result")
             if isinstance(raw_items, list):
-                items = raw_items
+                items.extend(raw_items)
+
+    if items:
+        # De-dup by ID if the same lead was found by multiple phone variants.
+        dedup: dict[int, Any] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            try:
+                dedup[int(item.get("ID"))] = item
+            except Exception:
+                continue
+        items = list(dedup.values())
+
         openlines_candidate: Optional[int] = None
         newest_candidate: Optional[int] = None
         openlines_candidate_no_date: Optional[int] = None
@@ -740,7 +755,12 @@ async def find_lead_id_by_phone(
 
                 title = str(item.get("TITLE") or "").lower()
                 source_id = str(item.get("SOURCE_ID") or "").lower()
-                is_openlines_like = ("openline" in source_id) or ("openline" in title)
+                is_openlines_like = (
+                    ("openline" in source_id)
+                    or ("openline" in title)
+                    or ("открытая линия" in title)
+                    or ("открыт" in source_id and "линия" in source_id)
+                )
                 if date_ok and is_openlines_like:
                     if openlines_candidate is None or cur_id > openlines_candidate:
                         openlines_candidate = cur_id

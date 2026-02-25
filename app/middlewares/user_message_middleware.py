@@ -236,7 +236,7 @@ class UserMessageMiddleware(BaseMiddleware):
                                         phone=lead_phone,
                                         fields=bitrix_fields,
                                         trace_id=trace_id + "P",
-                                        created_after=datetime.utcnow() - timedelta(minutes=10),
+                                        created_after=datetime.utcnow() - timedelta(minutes=30),
                                         strict_recent=True,
                                     )
                                     if by_phone.get("success"):

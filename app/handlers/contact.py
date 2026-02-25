@@ -249,7 +249,7 @@ async def process_contact_all(message: Message, state: FSMContext):
                                 phone=phone,
                                 fields=bitrix_fields,
                                 trace_id=f"contact_{message.message_id}P",
-                                created_after=datetime.utcnow() - timedelta(minutes=5),
+                                created_after=datetime.utcnow() - timedelta(minutes=30),
                                 strict_recent=True,
                             )
                             if by_phone.get("success"):
