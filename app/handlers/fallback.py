@@ -15,6 +15,7 @@ from app.infrastructure.external.bitrix24 import (
     send_message_to_openlines,
     enrich_openlines_lead,
     enrich_openlines_lead_by_id,
+    enrich_openlines_lead_by_phone,
 )
 
 logger = logging.getLogger(__name__)
@@ -116,7 +117,23 @@ async def fallback_private(message: Message, state: FSMContext):
                         lead_obj.bitrix_lead_id = ensured_bitrix_id
                         logger.info("✅ OpenLines lead enriched: %s", ensured_bitrix_id)
                     else:
-                        logger.warning("⚠️ OpenLines lead enrich failed: %s", enrich)
+                        lead_phone = str(getattr(lead_obj, "phone", "") or "")
+                        if lead_phone:
+                            by_phone = await enrich_openlines_lead_by_phone(
+                                phone=lead_phone,
+                                fields=bitrix_fields,
+                                trace_id=f"fallback_{message.message_id}P",
+                            )
+                            if by_phone.get("success"):
+                                ensured_bitrix_id = int(by_phone["lead_id"])
+                                lead_repo.set_bitrix_lead_id(lead_obj.id, ensured_bitrix_id)
+                                lead_obj.bitrix_lead_id = ensured_bitrix_id
+                                logger.info("OpenLines lead enriched by phone: %s", ensured_bitrix_id)
+                            else:
+                                logger.warning("OpenLines lead enrich failed: %s", enrich)
+                                logger.warning("OpenLines lead enrich by phone failed: %s", by_phone)
+                        else:
+                            logger.warning("OpenLines lead enrich failed: %s", enrich)
 
         await message.answer(
             "Я передал ваше сообщение менеджеру.\n"
@@ -128,3 +145,4 @@ async def fallback_private(message: Message, state: FSMContext):
             lead_repo.db.close()
         except Exception:
             pass
+

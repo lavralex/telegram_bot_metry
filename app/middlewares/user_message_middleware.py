@@ -20,6 +20,7 @@ from app.infrastructure.external.bitrix24 import (
     send_message_to_openlines,
     enrich_openlines_lead,
     enrich_openlines_lead_by_id,
+    enrich_openlines_lead_by_phone,
 )
 
 logger = logging.getLogger("bot.messages")
@@ -216,7 +217,23 @@ class UserMessageMiddleware(BaseMiddleware):
                                 lead.bitrix_lead_id = ensured_id
                                 logger.info("[%s] OpenLines lead enriched: %s", trace_id, ensured_id)
                             else:
-                                logger.warning("[%s] OpenLines lead enrich failed: %s", trace_id, enrich)
+                                lead_phone = str(getattr(lead, "phone", "") or "")
+                                if lead_phone:
+                                    by_phone = await enrich_openlines_lead_by_phone(
+                                        phone=lead_phone,
+                                        fields=bitrix_fields,
+                                        trace_id=trace_id + "P",
+                                    )
+                                    if by_phone.get("success"):
+                                        ensured_id = int(by_phone["lead_id"])
+                                        lead_repo.set_bitrix_lead_id(lead.id, ensured_id)
+                                        lead.bitrix_lead_id = ensured_id
+                                        logger.info("[%s] OpenLines lead enriched by phone: %s", trace_id, ensured_id)
+                                    else:
+                                        logger.warning("[%s] OpenLines lead enrich failed: %s", trace_id, enrich)
+                                        logger.warning("[%s] OpenLines lead enrich by phone failed: %s", trace_id, by_phone)
+                                else:
+                                    logger.warning("[%s] OpenLines lead enrich failed: %s", trace_id, enrich)
                         ol_sent_ok = True
                         logger.info("[%s] OpenLines send OK", trace_id)
 

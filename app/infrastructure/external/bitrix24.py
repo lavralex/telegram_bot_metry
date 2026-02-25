@@ -636,6 +636,107 @@ def _find_str_by_keys(obj: Any, keys: set[str]) -> Optional[str]:
     return None
 
 
+def _normalize_phone_variants(phone: str) -> list[str]:
+    p = str(phone or "").strip()
+    if not p:
+        return []
+    digits = "".join(ch for ch in p if ch.isdigit())
+    variants: list[str] = []
+    for v in (p, digits, f"+{digits}" if digits else ""):
+        if v and v not in variants:
+            variants.append(v)
+    return variants
+
+
+def _extract_lead_ids_from_duplicate_result(result: Any) -> list[int]:
+    ids: list[int] = []
+    if not isinstance(result, dict):
+        return ids
+    for key, value in result.items():
+        if str(key).strip().upper() != "LEAD":
+            continue
+        if isinstance(value, list):
+            for item in value:
+                try:
+                    ids.append(int(item))
+                except Exception:
+                    continue
+        else:
+            try:
+                ids.append(int(value))
+            except Exception:
+                continue
+    return ids
+
+
+async def find_lead_id_by_phone(phone: str, *, trace_id: Optional[str] = None) -> Dict[str, Any]:
+    tid = trace_id or uuid.uuid4().hex[:12]
+    variants = _normalize_phone_variants(phone)
+    if not variants:
+        return {"success": False, "error": "phone is empty"}
+
+    # Preferred way: CRM duplicate lookup by communication.
+    dup = await _post_bitrix(
+        "crm.duplicate.findbycomm",
+        {"type": "PHONE", "values": variants},
+        trace_id=tid + "D",
+    )
+    if dup.get("success"):
+        lead_ids = _extract_lead_ids_from_duplicate_result(dup.get("result"))
+        if lead_ids:
+            lead_id = max(lead_ids)
+            if _dbg():
+                logger.warning("[%s] phone->lead resolved by duplicate: phone=%s lead_id=%s", tid, variants[0], lead_id)
+            return {"success": True, "lead_id": int(lead_id), "method": "duplicate", "raw": dup.get("result")}
+
+    # Fallback: direct lead list by phone filter.
+    lst = await _post_bitrix(
+        "crm.lead.list",
+        {
+            "order": {"ID": "DESC"},
+            "filter": {"PHONE": variants[0]},
+            "select": ["ID"],
+            "start": 0,
+        },
+        trace_id=tid + "L",
+    )
+    if lst.get("success"):
+        result = lst.get("result")
+        items: list[Any] = []
+        if isinstance(result, list):
+            items = result
+        elif isinstance(result, dict):
+            raw_items = result.get("result")
+            if isinstance(raw_items, list):
+                items = raw_items
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            try:
+                return {"success": True, "lead_id": int(item.get("ID")), "method": "lead.list", "raw": item}
+            except Exception:
+                continue
+
+    return {"success": False, "error": "LEAD_NOT_FOUND_BY_PHONE", "phone": variants[0]}
+
+
+async def enrich_openlines_lead_by_phone(
+    *,
+    phone: str,
+    fields: Dict[str, Any],
+    trace_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    tid = trace_id or uuid.uuid4().hex[:12]
+    resolved = await find_lead_id_by_phone(phone, trace_id=tid + "P")
+    if not resolved.get("success"):
+        return resolved
+    return await enrich_openlines_lead_by_id(
+        lead_id=int(resolved["lead_id"]),
+        fields=fields,
+        trace_id=tid + "U",
+    )
+
+
 async def get_openlines_lead_id_by_chat_id(im_chat_id: str, *, trace_id: Optional[str] = None) -> Dict[str, Any]:
     tid = trace_id or uuid.uuid4().hex[:12]
     if not im_chat_id:

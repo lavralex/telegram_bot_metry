@@ -26,6 +26,7 @@ from app.infrastructure.external.bitrix24 import (
     send_message_to_openlines,
     enrich_openlines_lead,
     enrich_openlines_lead_by_id,
+    enrich_openlines_lead_by_phone,
 )
 
 logger = logging.getLogger(__name__)
@@ -239,7 +240,26 @@ async def process_contact_all(message: Message, state: FSMContext):
                         lead_obj.bitrix_lead_id = ensured_bitrix_id
                         logger.info("✅ OpenLines lead enriched: %s", ensured_bitrix_id)
                     else:
-                        logger.warning("⚠️ OpenLines lead enrich failed: %s", enrich)
+                        if phone:
+                            by_phone = await enrich_openlines_lead_by_phone(
+                                phone=phone,
+                                fields=bitrix_fields,
+                                trace_id=f"contact_{message.message_id}P",
+                            )
+                            if by_phone.get("success"):
+                                ensured_bitrix_id = int(by_phone["lead_id"])
+                                lead_repo3 = get_lead_repository()
+                                try:
+                                    lead_repo3.set_bitrix_lead_id(lead_obj.id, ensured_bitrix_id)
+                                finally:
+                                    lead_repo3.db.close()
+                                lead_obj.bitrix_lead_id = ensured_bitrix_id
+                                logger.info("OpenLines lead enriched by phone: %s", ensured_bitrix_id)
+                            else:
+                                logger.warning("OpenLines lead enrich failed: %s", enrich)
+                                logger.warning("OpenLines lead enrich by phone failed: %s", by_phone)
+                        else:
+                            logger.warning("OpenLines lead enrich failed: %s", enrich)
         except Exception as e:
             logger.warning("⚠️ Не удалось отправить сообщение в OpenLines: %s", e)
 
@@ -385,3 +405,4 @@ async def send_subscribe_message(message: Message):
     except Exception as e:
         logger.error(f"❌ Ошибка отправки картинки подписки: {e}")
         await message.answer("Узнавайте первыми о новых объектах недвижимости!", reply_markup=get_subscribe_keyboard())
+
