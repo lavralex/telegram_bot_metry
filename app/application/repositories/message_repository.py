@@ -48,7 +48,6 @@ class MessageRepository:
         return message
     
     def get_user_info_for_message(self, user_id: int) -> dict:
-        """Получает информацию о пользователе для отображения админу"""
         lead = self.db.query(Lead).filter(Lead.user_id == user_id).order_by(desc(Lead.created_at)).first()
 
         last_message = self.db.query(UserMessage).filter(

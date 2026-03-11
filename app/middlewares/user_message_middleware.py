@@ -1,185 +1,267 @@
+import logging
+import uuid
+from datetime import datetime, timedelta
+from typing import Callable, Dict, Any, Awaitable, Optional
+
 from aiogram import BaseMiddleware
 from aiogram.types import Message, Update
-from typing import Callable, Dict, Any, Awaitable
-import logging
-
-from app.core.config import config
-from app.core.dependencies import get_message_repository, get_lead_repository, get_user_repository
-from app.infrastructure.database.models import Lead
 from sqlalchemy import desc
 
-logger = logging.getLogger('bot.messages')
+from app.core.config import config
+from app.core.database import SessionLocal
+from app.core.dependencies import get_user_repository
+
+from app.application.services.lead_service import LeadService
+from app.application.repositories.lead_repository import LeadRepository
+from app.application.repositories.message_repository import MessageRepository
+
+from app.infrastructure.database.models import Lead
+from app.infrastructure.external.bitrix24 import (
+    ensure_bitrix_lead,
+    send_message_to_openlines,
+    enrich_openlines_lead,
+    enrich_openlines_lead_by_id,
+    enrich_openlines_lead_by_phone,
+)
+
+logger = logging.getLogger("bot.messages")
+
+
+def _dbg() -> bool:
+    return bool(getattr(config, "BITRIX24_DEBUG", False))
+
+
+def _mode() -> str:
+    return "oauth" if bool(getattr(config, "BITRIX24_USE_OAUTH", False)) else "webhook"
+
+
+def _base_hint() -> str:
+    if _mode() == "oauth":
+        portal = str(getattr(config, "BITRIX24_PORTAL", "") or "").strip()
+        return f"portal={portal}" if portal else "portal="
+    wh = str(getattr(config, "BITRIX24_WEBHOOK_URL", "") or "").strip()
+    return "webhook=***" if wh else "webhook="
+
 
 class UserMessageMiddleware(BaseMiddleware):
     async def __call__(
         self,
         handler: Callable[[Update, Dict[str, Any]], Awaitable[Any]],
         event: Update,
-        data: Dict[str, Any]
+        data: Dict[str, Any],
     ) -> Any:
         if not event.message:
             return await handler(event, data)
-            
-        message = event.message
 
-        if message.chat.type == "private":
-            user_id = message.from_user.id
+        message: Message = event.message
 
-            user_repo = get_user_repository()
+        if message.chat.type != "private":
+            return await handler(event, data)
+
+        user_id = message.from_user.id
+
+        if message.text and message.text.startswith("/"):
+            return await handler(event, data)
+
+        if user_id in config.ADMIN_IDS:
+            return await handler(event, data)
+
+        if not (message.text or message.caption or message.photo or message.document):
+            return await handler(event, data)
+
+        trace_id = uuid.uuid4().hex[:12]
+
+        incoming_preview = (message.text or message.caption or "")
+        logger.info("[%s] TG message: user_id=%s text=%r", trace_id, user_id, incoming_preview[:120])
+
+        if _dbg():
+            logger.warning(
+                "[%s] Bitrix runtime: enabled=%s openlines=%s mode=%s %s line=%s connector=%s env=%s",
+                trace_id,
+                bool(getattr(config, "BITRIX24_ENABLED", False)),
+                bool(getattr(config, "BITRIX24_OPENLINES_ENABLED", True)),
+                _mode(),
+                _base_hint(),
+                str(getattr(config, "BITRIX24_OPENLINE_ID", "") or "").strip(),
+                str(getattr(config, "BITRIX24_CONNECTOR_ID", "") or "").strip(),
+                str(getattr(config, "ENV", "") or ""),
+            )
+
+        state_data: Dict[str, Any] = {}
+        state = data.get("state")
+        if state:
             try:
-                state = data.get('state')
-                utm_source = "organic"
-                if state:
-                    try:
-                        state_data = await state.get_data()
-                        utm_source = state_data.get('utm_source', 'organic')
-                    except:
-                        pass
-                
-                user_data = {
+                state_data = await state.get_data()
+            except Exception:
+                state_data = {}
+
+        user_repo = get_user_repository()
+        try:
+            utm_source = state_data.get("utm_source") or "organic"
+            user_repo.get_or_create_user(
+                {
                     "user_id": user_id,
                     "username": message.from_user.username,
                     "first_name": message.from_user.first_name,
-                    "last_name": message.from_user.last_name
-                }
-
-                user_repo.get_or_create_user(user_data, utm_source)
-
-                user_repo.update_user_activity(user_id)
-                
-            except Exception as e:
-                logger.error(f"❌ Ошибка трекинга пользователя: {e}")
-            finally:
+                    "last_name": message.from_user.last_name,
+                },
+                utm_source,
+            )
+            user_repo.update_user_activity(user_id)
+        except Exception as e:
+            logger.error("[%s] User tracking error: %s", trace_id, e, exc_info=True)
+        finally:
+            try:
                 user_repo.db.close()
+            except Exception:
+                pass
 
-            if message.text and message.text.startswith('/'):
-                return await handler(event, data)
+        user_data = {
+            "user_id": user_id,
+            "username": message.from_user.username,
+            "first_name": message.from_user.first_name,
+            "last_name": message.from_user.last_name,
+        }
 
-            if user_id in config.ADMIN_IDS:
-                return await handler(event, data)
+        db = SessionLocal()
+        ol_sent_ok = False
+        ol_error: Optional[str] = None
 
-            if not (message.text or message.photo or message.document):
-                return await handler(event, data)
+        try:
+            msg_repo = MessageRepository(db)
+            lead_repo = LeadRepository(db)
+            lead_service = LeadService(lead_repo)
 
-            message_repo = get_message_repository()
-            lead_repo = get_lead_repository()
-            
-            try:
-                lead = lead_repo.db.query(Lead).filter(
-                    Lead.user_id == user_id
-                ).order_by(desc(Lead.created_at)).first()
-                
-                utm_to_use = "organic"
-                
-                if lead and lead.utm_source:
-                    utm_to_use = lead.utm_source
-                    logger.info(f"✅ Используем UTM из лида: {utm_to_use}")
+            lead: Optional[Lead] = (
+                db.query(Lead)
+                .filter(Lead.user_id == user_id)
+                .order_by(desc(Lead.created_at))
+                .first()
+            )
+
+            message_text = message.text or message.caption or ""
+            if not message_text and (message.photo or message.document):
+                message_text = "[media]"
+
+            lead, bitrix_fields = lead_service.ensure_minimal_lead_from_state(user_data, state_data)
+            ol_owns_lead = bool(getattr(config, "BITRIX24_OPENLINES_OWNS_LEAD", False))
+
+            if config.BITRIX24_ENABLED and not ol_owns_lead:
+                bres = await ensure_bitrix_lead(lead, bitrix_fields, trace_id=trace_id + "B")
+                if bres.get("success"):
+                    ensured_id = int(bres["lead_id"])
+                    if not getattr(lead, "bitrix_lead_id", None):
+                        lead_repo.set_bitrix_lead_id(lead.id, ensured_id)
+                        lead.bitrix_lead_id = ensured_id
+                    logger.info("[%s] Bitrix lead ensured: %s", trace_id, ensured_id)
                 else:
-                    state = data.get('state')
-                    if state:
-                        try:
-                            state_data = await state.get_data()
-                            utm_from_state = state_data.get('utm_source', 'organic')
-                            if utm_from_state != 'organic':
-                                utm_to_use = utm_from_state
-                                logger.info(f"ℹ️ Используем UTM из состояния: {utm_to_use}")
-                        except:
-                            pass
+                    logger.warning("[%s] Bitrix lead ensure failed: %s", trace_id, bres.get("error"))
 
-                message_data = {
-                    'user_id': user_id,
-                    'message_text': message.text or message.caption or '',
-                    'direction': 'user_to_admin',
-                    'utm_source': utm_to_use,
-                    'lead_id': lead.id if lead else None
+            utm_to_use = getattr(lead, "utm_source", None) or state_data.get("utm_source") or "organic"
+
+            msg_repo.create_message(
+                {
+                    "user_id": user_id,
+                    "message_text": message_text,
+                    "direction": "user_to_admin",
+                    "utm_source": utm_to_use,
+                    "lead_id": lead.id,
                 }
+            )
 
-                if message.photo:
-                    message_data['photo_url'] = message.photo[-1].file_id
+            if config.BITRIX24_ENABLED and getattr(config, "BITRIX24_OPENLINES_ENABLED", True):
+                seg = state_data.get("segment") or getattr(lead, "segment", None) or "unknown"
+                utm = state_data.get("utm_source") or getattr(lead, "utm_source", None) or "organic"
+                prefix = f"[segment={seg}, utm={utm}] "
+                lead_id_for_ol = int(getattr(lead, "bitrix_lead_id", 0) or 0)
+                if ol_owns_lead:
+                    # In OL-owned mode always keep routing by local lead chat token.
+                    lead_id_for_ol = 0
 
-                if message.document:
-                    message_data['document_url'] = message.document.file_id
-                
-                db_message = message_repo.create_message(message_data)
-                logger.info(f"💬 Сообщение от пользователя {user_id} сохранено, UTM: {utm_to_use}")
-
-                user_repo_again = get_user_repository()
-                try:
-                    user_repo_again.update_chat_status(user_id, True)
-                finally:
-                    user_repo_again.db.close()
-
-                await self.forward_to_admins(message, user_id, lead, utm_to_use)
-                
-            except Exception as e:
-                logger.error(f"❌ Ошибка сохранения сообщения: {e}")
-            finally:
-                if 'message_repo' in locals():
-                    message_repo.db.close()
-                if 'lead_repo' in locals():
-                    lead_repo.db.close()
-        
-        return await handler(event, data)
-    
-    async def forward_to_admins(self, message: Message, user_id: int, lead: Any = None, correct_utm: str = None):
-        """Пересылает сообщение всем админам"""
-        bot = message.bot
-        user_info = f"👤 {message.from_user.first_name or ''} {message.from_user.last_name or ''}"
-        username = f" (@{message.from_user.username})" if message.from_user.username else ""
-        user_info += username
-        
-        contact_info = ""
-        if lead and lead.phone:
-            contact_info = f"📞 {lead.phone}"
-
-        utm_info = f"🏷️ UTM: {correct_utm if correct_utm else 'organic'}"
-        admin_message = f"💬 НОВОЕ СООБЩЕНИЕ\n\n"
-        admin_message += f"{user_info}\n"
-        admin_message += f"{contact_info}\n" if contact_info else ""
-        admin_message += f"{utm_info}\n"
-        admin_message += f"🆔 ID: {user_id}\n\n"
-        
-        if message.text:
-            admin_message += f"📝 Текст:\n{message.text}"
-        elif message.caption:
-            admin_message += f"📝 Текст:\n{message.caption}"
-
-        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-        reply_keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="💬 Ответить",
-                    callback_data=f"reply_to_{user_id}"
-                )],
-                [InlineKeyboardButton(
-                    text="📊 Профиль пользователя",
-                    callback_data=f"profile_{user_id}"
-                )]
-            ]
-        )
-
-        for admin_id in config.ADMIN_IDS:
-            try:
-                if message.photo:
-                    await bot.send_photo(
-                        chat_id=admin_id,
-                        photo=message.photo[-1].file_id,
-                        caption=admin_message,
-                        reply_markup=reply_keyboard
-                    )
-                elif message.document:
-                    await bot.send_document(
-                        chat_id=admin_id,
-                        document=message.document.file_id,
-                        caption=admin_message,
-                        reply_markup=reply_keyboard
-                    )
+                if lead_id_for_ol <= 0 and not ol_owns_lead:
+                    logger.warning("[%s] Skip OpenLines send: missing bitrix_lead_id for local lead_id=%s", trace_id, lead.id)
                 else:
-                    await bot.send_message(
-                        chat_id=admin_id,
-                        text=admin_message,
-                        reply_markup=reply_keyboard
+                    ol_res = await send_message_to_openlines(
+                        lead_id=lead_id_for_ol,
+                        tg_user_id=user_id,
+                        tg_username=message.from_user.username or "",
+                        text=prefix + message_text,
+                        message_id=str(message.message_id),
+                        unix_date=int(message.date.timestamp()),
+                        attach_crm=lead_id_for_ol > 0,
+                        chat_token=(f"lead_{lead.id}" if ol_owns_lead else ""),
+                        trace_id=trace_id + "O",
                     )
-                logger.info(f"📤 Сообщение переслано админу {admin_id}, UTM: {correct_utm}")
-            except Exception as e:
-                logger.error(f"❌ Ошибка отправки админу {admin_id}: {e}")
+
+                    if not ol_res.get("success"):
+                        ol_error = str(ol_res.get("error") or "unknown error")
+                        logger.warning("[%s] OpenLines send failed: %s", trace_id, ol_error)
+                    else:
+                        if lead_id_for_ol <= 0:
+                            enrich: Dict[str, Any] = {"success": False, "error": "NO_LEAD_ID_OR_CHAT_ID"}
+                            local_bitrix_id = int(getattr(lead, "bitrix_lead_id", 0) or 0)
+                            if ol_owns_lead and local_bitrix_id > 0:
+                                logger.info("[%s] OL enrich target from local lead binding: %s", trace_id, local_bitrix_id)
+                                enrich = await enrich_openlines_lead_by_id(
+                                    lead_id=local_bitrix_id,
+                                    fields=bitrix_fields,
+                                    trace_id=trace_id + "EL",
+                                )
+                            else:
+                                ol_lead_id = int(ol_res.get("ol_lead_id") or 0)
+                                if ol_lead_id > 0:
+                                    enrich = await enrich_openlines_lead_by_id(
+                                        lead_id=ol_lead_id,
+                                        fields=bitrix_fields,
+                                        trace_id=trace_id + "E",
+                                    )
+                                else:
+                                    lookup_chat_id = str(ol_res.get("im_chat_id") or ol_res.get("connector_chat_id") or "")
+                                    if lookup_chat_id:
+                                        enrich = await enrich_openlines_lead(
+                                            im_chat_id=lookup_chat_id,
+                                            fields=bitrix_fields,
+                                            trace_id=trace_id + "E",
+                                        )
+
+                            if enrich.get("success"):
+                                ensured_id = int(enrich["lead_id"])
+                                lead_repo.set_bitrix_lead_id(lead.id, ensured_id)
+                                lead.bitrix_lead_id = ensured_id
+                                logger.info("[%s] OpenLines lead enriched: %s", trace_id, ensured_id)
+                            else:
+                                lead_phone = str(getattr(lead, "phone", "") or "")
+                                if lead_phone:
+                                    by_phone = await enrich_openlines_lead_by_phone(
+                                        phone=lead_phone,
+                                        fields=bitrix_fields,
+                                        trace_id=trace_id + "P",
+                                        created_after=datetime.utcnow() - timedelta(minutes=30),
+                                        strict_recent=True,
+                                    )
+                                    if by_phone.get("success"):
+                                        ensured_id = int(by_phone["lead_id"])
+                                        lead_repo.set_bitrix_lead_id(lead.id, ensured_id)
+                                        lead.bitrix_lead_id = ensured_id
+                                        logger.info("[%s] OpenLines lead enriched by phone: %s", trace_id, ensured_id)
+                                    else:
+                                        logger.warning("[%s] OpenLines lead enrich failed: %s", trace_id, enrich)
+                                        logger.warning("[%s] OpenLines lead enrich by phone failed: %s", trace_id, by_phone)
+                                else:
+                                    logger.warning("[%s] OpenLines lead enrich failed: %s", trace_id, enrich)
+                        ol_sent_ok = True
+                        logger.info("[%s] OpenLines send OK", trace_id)
+
+        except Exception as e:
+            ol_error = str(e)
+            logger.error("[%s] Middleware error: %s", trace_id, e, exc_info=True)
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+        if _dbg():
+            logger.warning("[%s] Middleware end: ol_sent_ok=%s error=%s", trace_id, ol_sent_ok, ol_error)
+
+        return await handler(event, data)
