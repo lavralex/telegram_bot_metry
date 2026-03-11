@@ -269,6 +269,38 @@ class BitrixOAuthRestClient:
             logger.exception("[%s] Bitrix OAuth request failed: %s %s", trace_id, method, e)
             return {"success": False, "error": f"Request failed: {e}"}
 
+        # Some Bitrix portals ignore JSON body auth; retry with auth in query string.
+        if isinstance(data, dict) and str(data.get("error") or "") == "authorization_error":
+            retry_url = f"{url}?auth={token}"
+            retry_body = dict(payload)
+            t1 = time.perf_counter()
+            try:
+                if _dbg():
+                    logger.warning(
+                        "[%s] Bitrix oauth retry with query auth %s url=%s payload=%s",
+                        trace_id,
+                        method,
+                        retry_url,
+                        _truncate(_safe_json(_safe_payload(retry_body)), _dbg_limit()),
+                    )
+
+                async with self.session.post(retry_url, json=retry_body) as resp2:
+                    data2 = await _read_response_body(resp2)
+                    elapsed_ms2 = int((time.perf_counter() - t1) * 1000)
+                    if _dbg():
+                        logger.warning(
+                            "[%s] Bitrix oauth RETRY RESP %s status=%s ms=%s body=%s",
+                            trace_id,
+                            method,
+                            resp2.status,
+                            elapsed_ms2,
+                            _truncate(_safe_json(data2), _dbg_limit()),
+                        )
+                data = data2
+            except Exception as e:
+                logger.exception("[%s] Bitrix OAuth retry request failed: %s %s", trace_id, method, e)
+                return {"success": False, "error": f"Request failed: {e}"}
+
         if isinstance(data, dict) and data.get("error"):
             logger.error("[%s] Bitrix OAuth error (%s): %s", trace_id, method, data)
             return {
