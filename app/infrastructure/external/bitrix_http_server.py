@@ -264,6 +264,31 @@ def _split_bracket_key(key: str) -> List[str]:
     return [p for p in parts if p != ""]
 
 
+def _safe_install_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    safe: Dict[str, Any] = {}
+    for k, v in (payload or {}).items():
+        kl = str(k or "").lower()
+        if "access_token" in kl or "refresh_token" in kl or "application_token" in kl:
+            safe[k] = "***"
+        else:
+            safe[k] = v
+    return safe
+
+
+def _extract_install_auth(payload: Dict[str, Any]) -> Dict[str, Any]:
+    auth = payload.get("auth")
+    if isinstance(auth, dict):
+        return auth
+
+    # Common ONAPPINSTALL form shape: auth[access_token], auth[refresh_token], ...
+    out: Dict[str, Any] = {}
+    for k, v in (payload or {}).items():
+        ks = str(k or "")
+        if ks.startswith("auth[") and ks.endswith("]"):
+            out[ks[5:-1]] = v
+    return out
+
+
 def _inflate_bracket_form(flat: Dict[str, Any]) -> Dict[str, Any]:
     """
     Converts keys like data[MESSAGES][0][message][text] into nested dict/list.
@@ -427,8 +452,50 @@ def create_app(bot) -> FastAPI:
         except Exception:
             payload = {"_raw": "failed_to_parse"}
 
-        logger.info("[BITRIX INSTALL] %s", str(payload)[:800])
-        return {"ok": True}
+        logger.info("[BITRIX INSTALL] %s", str(_safe_install_payload(payload))[:1000])
+
+        # For local Bitrix apps, ONAPPINSTALL carries OAuth tokens in auth[*].
+        auth = _extract_install_auth(payload)
+        access_token = str(auth.get("access_token") or "").strip()
+        refresh_token = str(auth.get("refresh_token") or "").strip()
+        expires_in_raw = auth.get("expires_in", 3600)
+        try:
+            expires_in = int(expires_in_raw or 3600)
+        except Exception:
+            expires_in = 3600
+
+        saved = False
+        bootstrap: Dict[str, Any] = {"success": False, "error": "skipped"}
+
+        if access_token and refresh_token:
+            try:
+                oauth = BitrixOAuthService()
+                oauth.save_oauth_tokens(
+                    access_token=access_token,
+                    refresh_token=refresh_token,
+                    expires_in=expires_in,
+                )
+                saved = True
+                logger.info("OAuth tokens saved from /bitrix/install. expires_in=%s", expires_in)
+            except Exception as e:
+                logger.error("Failed to save OAuth tokens from /bitrix/install: %s", e, exc_info=True)
+                return JSONResponse({"ok": False, "error": "save_tokens_failed", "details": str(e)}, status_code=500)
+
+            try:
+                from app.infrastructure.external.bitrix24 import ensure_bitrix_ready
+
+                bootstrap = await ensure_bitrix_ready()
+                logger.info("Bitrix bootstrap after install: %s", str(bootstrap)[:1200])
+            except Exception as e:
+                logger.error("ensure_bitrix_ready after install failed: %s", e, exc_info=True)
+                bootstrap = {"success": False, "error": str(e)}
+
+        return {
+            "ok": True,
+            "event": str(payload.get("event") or payload.get("EVENT") or ""),
+            "saved": saved,
+            "bootstrap": bootstrap,
+        }
 
     @app.get("/bitrix/oauth/callback")
     async def bitrix_oauth_callback(request: Request, code: str | None = None, state: str | None = None):
